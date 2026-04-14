@@ -1,0 +1,8 @@
+.env
+.deps/
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+gym-buddy-b125f-firebase-adminsdk-fbsvc-73425cac42.json

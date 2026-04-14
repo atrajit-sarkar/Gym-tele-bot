@@ -1,0 +1,11 @@
+2026-04-14 20:58:07,393 | INFO | app.bot | Starting bot polling loop.
+2026-04-14 20:58:08,249 | INFO | httpx | HTTP Request: POST https://api.telegram.org/bot8798665813:AAF4ekQBLzvS0MMT2vODH56U_9p7O1QHD-I/getMe "HTTP/1.1 200 OK"
+2026-04-14 20:58:08,625 | INFO | httpx | HTTP Request: POST https://api.telegram.org/bot8798665813:AAF4ekQBLzvS0MMT2vODH56U_9p7O1QHD-I/setMyCommands "HTTP/1.1 200 OK"
+2026-04-14 20:58:08,712 | INFO | apscheduler.scheduler | Adding job tentatively -- it will be properly scheduled when the scheduler starts
+2026-04-14 20:58:08,713 | INFO | app.bot | Daily reminder scheduled at 07:30 Asia/Kolkata
+2026-04-14 20:58:08,899 | INFO | httpx | HTTP Request: POST https://api.telegram.org/bot8798665813:AAF4ekQBLzvS0MMT2vODH56U_9p7O1QHD-I/deleteWebhook "HTTP/1.1 200 OK"
+2026-04-14 20:58:08,902 | INFO | apscheduler.scheduler | Added job "daily-gym-broadcast" to job store "default"
+2026-04-14 20:58:08,902 | INFO | apscheduler.scheduler | Scheduler started
+2026-04-14 20:58:08,903 | INFO | telegram.ext.Application | Application started
+2026-04-14 20:58:19,448 | INFO | httpx | HTTP Request: POST https://api.telegram.org/bot8798665813:AAF4ekQBLzvS0MMT2vODH56U_9p7O1QHD-I/getUpdates "HTTP/1.1 200 OK"
+2026-04-14 20:58:29,672 | INFO | httpx | HTTP Request: POST https://api.telegram.org/bot8798665813:AAF4ekQBLzvS0MMT2vODH56U_9p7O1QHD-I/getUpdates "HTTP/1.1 200 OK"
