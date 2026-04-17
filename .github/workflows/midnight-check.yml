@@ -1,0 +1,30 @@
+name: Midnight Check Missed
+
+on:
+  schedule:
+    # Runs every day at 18:30 UTC (00:00 IST next day)
+    - cron: "30 18 * * *"
+  workflow_dispatch: # Allow manual trigger
+
+jobs:
+  check-missed:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install firebase-admin httpx tzdata
+
+      - name: Check missed and send reports
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          FIREBASE_SERVICE_ACCOUNT_BASE64: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_BASE64 }}
+          FIRESTORE_DATABASE_ID: ${{ secrets.FIRESTORE_DATABASE_ID }}
+          BOT_TIMEZONE: ${{ secrets.BOT_TIMEZONE }}
+        run: python check_missed.py

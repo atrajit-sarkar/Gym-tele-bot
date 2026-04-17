@@ -41,6 +41,7 @@ export default {
 // ── Poll answer handler ──────────────────────────────────────────────
 
 const OPTION_STATUS = { 0: "completed", 1: "skipped" };
+const REST_DAY_INDEX = 6; // Sunday (Mon=0 ... Sun=6)
 
 async function handlePollAnswer(pollAnswer, env) {
   const { poll_id, user, option_ids } = pollAnswer;
@@ -167,13 +168,23 @@ function buildHistory(joinedOnStr, scheduledWeekdays, checkins, checkinWeekdays,
   const current = new Date(joinedOn);
   while (current <= today) {
     const dayOfWeek = (current.getUTCDay() + 6) % 7;
+    const key = current.toISOString().slice(0, 10);
+    const weekdayName = WEEKDAY_NAMES[dayOfWeek];
+
+    // Sunday = rest day — always show in history as "rest"
+    if (dayOfWeek === REST_DAY_INDEX) {
+      if (key <= todayStr) {
+        history.push({ date: key, weekday: weekdayName, status: "rest", tasks: ["Rest Day"] });
+      }
+      current.setUTCDate(current.getUTCDate() + 1);
+      continue;
+    }
+
     if (!scheduledWeekdays.has(dayOfWeek)) {
       current.setUTCDate(current.getUTCDate() + 1);
       continue;
     }
 
-    const key = current.toISOString().slice(0, 10);
-    const weekdayName = checkinWeekdays[key] || WEEKDAY_NAMES[dayOfWeek];
     let status = checkins[key] || null;
 
     if (key === todayStr && !status) {
@@ -211,6 +222,11 @@ function calculateStreaks(joinedOnStr, scheduledWeekdays, checkins, todayStr) {
   const current = new Date(joinedOn);
   while (current <= today) {
     const dayOfWeek = (current.getUTCDay() + 6) % 7; // Mon=0 ... Sun=6
+    // Skip rest day (Sunday) — never counts for or against streaks
+    if (dayOfWeek === REST_DAY_INDEX) {
+      current.setUTCDate(current.getUTCDate() + 1);
+      continue;
+    }
     if (!scheduledWeekdays.has(dayOfWeek)) {
       current.setUTCDate(current.getUTCDate() + 1);
       continue;
@@ -280,7 +296,7 @@ function buildProgressHTML(firstName, stats) {
   const historyHtml = stats.history.map((entry) => {
     const d = new Date(entry.date + "T00:00:00Z");
     const dateStr = d.toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric", timeZone: "UTC" });
-    const icon = entry.status === "completed" ? "check" : entry.status === "skipped" ? "skip" : "miss";
+    const icon = entry.status === "completed" ? "check" : entry.status === "skipped" ? "skip" : entry.status === "rest" ? "rest" : "miss";
     const taskList = entry.tasks.length > 0 ? entry.tasks.join(", ") : "—";
     return `<tr class="row-${icon}">
       <td class="cell-date">
@@ -519,6 +535,7 @@ function buildProgressHTML(firstName, stats) {
   .status-check { background: var(--green); box-shadow: 0 0 6px var(--green); }
   .status-skip { background: var(--yellow); box-shadow: 0 0 6px var(--yellow); }
   .status-miss { background: var(--red); box-shadow: 0 0 6px var(--red); }
+  .status-rest { background: #8888a0; box-shadow: 0 0 6px #8888a0; }
 
   .legend {
     display: flex;
@@ -599,6 +616,7 @@ function buildProgressHTML(firstName, stats) {
       <div class="legend-item"><div class="legend-dot" style="background:var(--green)"></div> Completed</div>
       <div class="legend-item"><div class="legend-dot" style="background:var(--yellow)"></div> Skipped</div>
       <div class="legend-item"><div class="legend-dot" style="background:var(--red)"></div> Missed</div>
+      <div class="legend-item"><div class="legend-dot" style="background:#8888a0"></div> Rest</div>
     </div>
   </div>
 
