@@ -2,8 +2,8 @@ name: Daily Workout Poll
 
 on:
   schedule:
-    # Runs every day at 01:30 UTC (07:00 IST)
-    - cron: "30 1 * * *"
+    # Runs every day at 00:30 UTC (06:00 IST)
+    - cron: "30 0 * * *"
   workflow_dispatch: # Allow manual trigger
 
 jobs:
