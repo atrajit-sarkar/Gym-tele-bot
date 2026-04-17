@@ -90,6 +90,118 @@ async function handlePollAnswer(pollAnswer, env) {
   const statusText = status === "completed" ? "Going for it" : "Skipping today";
   const message = `<b>${escapeHtml(firstName)}</b>: ${statusText}`;
   await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, chatId, topicId, message);
+
+  // Compute progress and DM the user
+  try {
+    const progress = await computeProgress(dbPath, accessToken, userId, scheduledDate);
+    const report = buildProgressReport(firstName, progress);
+    await sendTelegramDM(env.TELEGRAM_BOT_TOKEN, userId, report);
+    console.log(`Sent progress DM to user ${userId}`);
+  } catch (err) {
+    console.error(`Failed to send progress DM to ${userId}:`, err);
+  }
+}
+
+// ── Progress calculation ─────────────────────────────────────────────
+
+async function computeProgress(dbPath, accessToken, userId, todayStr) {
+  // Fetch all checkins for this user
+  const checkins = await firestoreList(dbPath, accessToken, `users/${userId}/checkins`);
+  const checkinMap = {};
+  for (const doc of checkins) {
+    const dateVal = doc.fields?.date?.stringValue;
+    const statusVal = doc.fields?.status?.stringValue;
+    if (dateVal && statusVal) {
+      checkinMap[dateVal] = statusVal;
+    }
+  }
+
+  // Fetch all routine tasks to determine scheduled weekdays
+  const tasks = await firestoreList(dbPath, accessToken, "routine_tasks");
+  const scheduledWeekdays = new Set();
+  for (const task of tasks) {
+    const idx = task.fields?.weekday_index?.integerValue;
+    if (idx !== undefined) {
+      scheduledWeekdays.add(Number(idx));
+    }
+  }
+
+  // Fetch user's joined_on date
+  const userDoc = await firestoreGet(dbPath, accessToken, `users/${userId}`);
+  const joinedOnStr = userDoc?.fields?.joined_on?.stringValue || todayStr;
+
+  return calculateStreaks(joinedOnStr, scheduledWeekdays, checkinMap, todayStr);
+}
+
+function calculateStreaks(joinedOnStr, scheduledWeekdays, checkins, todayStr) {
+  if (scheduledWeekdays.size === 0) {
+    return { currentStreak: 0, longestStreak: 0, totalCompleted: 0, totalMissed: 0, completionRate: 0 };
+  }
+
+  const joinedOn = new Date(joinedOnStr + "T00:00:00Z");
+  const today = new Date(todayStr + "T00:00:00Z");
+  const resolved = []; // [{date, status}]
+
+  const current = new Date(joinedOn);
+  while (current <= today) {
+    const dayOfWeek = (current.getUTCDay() + 6) % 7; // Mon=0 ... Sun=6
+    if (!scheduledWeekdays.has(dayOfWeek)) {
+      current.setUTCDate(current.getUTCDate() + 1);
+      continue;
+    }
+
+    const key = current.toISOString().slice(0, 10);
+    let status = checkins[key] || null;
+
+    if (key === todayStr && !status) {
+      current.setUTCDate(current.getUTCDate() + 1);
+      continue;
+    }
+    if (key < todayStr && !status) {
+      status = "missed";
+    }
+    if (status) {
+      resolved.push({ date: key, status });
+    }
+
+    current.setUTCDate(current.getUTCDate() + 1);
+  }
+
+  const totalCompleted = resolved.filter((r) => r.status === "completed").length;
+  const totalMissed = resolved.length - totalCompleted;
+
+  let currentStreak = 0;
+  for (let i = resolved.length - 1; i >= 0; i--) {
+    if (resolved[i].status === "completed") currentStreak++;
+    else break;
+  }
+
+  let longestStreak = 0;
+  let running = 0;
+  for (const r of resolved) {
+    if (r.status === "completed") {
+      running++;
+      if (running > longestStreak) longestStreak = running;
+    } else {
+      running = 0;
+    }
+  }
+
+  const completionRate = resolved.length > 0 ? Math.round((totalCompleted / resolved.length) * 100 * 100) / 100 : 0;
+
+  return { currentStreak, longestStreak, totalCompleted, totalMissed, completionRate };
+}
+
+function buildProgressReport(firstName, stats) {
+  return (
+    `<b>Progress Report for ${escapeHtml(firstName)}</b>\n` +
+    `\nCurrent streak: <b>${stats.currentStreak}</b>` +
+    `\nLongest streak: <b>${stats.longestStreak}</b>` +
+    `\nCompleted workout days: <b>${stats.totalCompleted}</b>` +
+    `\nMissed workout days: <b>${stats.totalMissed}</b>` +
+    `\nCompletion rate: <b>${stats.completionRate}%</b>` +
+    `\n\nKeep pushing! Consistency is everything.`
+  );
 }
 
 // ── Firebase / Google auth ───────────────────────────────────────────
@@ -176,7 +288,29 @@ async function firestorePatch(basePath, token, docPath, body) {
   return resp.json();
 }
 
-// ── Telegram helper ──────────────────────────────────────────────────
+async function firestoreList(basePath, token, collectionPath) {
+  const docs = [];
+  let pageToken = null;
+
+  while (true) {
+    let url = `${basePath}/${collectionPath}?pageSize=300`;
+    if (pageToken) url += `&pageToken=${pageToken}`;
+
+    const resp = await fetch(url, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!resp.ok) throw new Error(`Firestore LIST ${resp.status}: ${await resp.text()}`);
+
+    const data = await resp.json();
+    if (data.documents) docs.push(...data.documents);
+    if (!data.nextPageToken) break;
+    pageToken = data.nextPageToken;
+  }
+
+  return docs;
+}
+
+// ── Telegram helpers ─────────────────────────────────────────────────
 
 async function sendTelegramMessage(botToken, chatId, topicId, text) {
   const resp = await fetch(
@@ -194,6 +328,24 @@ async function sendTelegramMessage(botToken, chatId, topicId, text) {
   );
   if (!resp.ok) {
     console.error("Telegram sendMessage failed:", await resp.text());
+  }
+}
+
+async function sendTelegramDM(botToken, userId, text) {
+  const resp = await fetch(
+    `https://api.telegram.org/bot${botToken}/sendMessage`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        chat_id: userId,
+        text,
+        parse_mode: "HTML",
+      }),
+    }
+  );
+  if (!resp.ok) {
+    console.error(`Telegram DM to ${userId} failed:`, await resp.text());
   }
 }
 
