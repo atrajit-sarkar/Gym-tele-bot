@@ -189,14 +189,17 @@ def _fallback_motivation(day_name: str, tasks: list[dict], today: date) -> str:
     )
 
 
-def build_workout_message(day_name: str, tasks: list[dict], motivation: str) -> str:
+def build_workout_message(day_name: str, tasks: list[dict], motivation: str, sets_reps_info: str = "") -> str:
     lines = [f"<b>Daily Motivation</b>\n{escape(motivation)}", "", f"<b>{escape(day_name)} Routine</b>"]
     if not tasks:
         lines.append("Today is a recovery day. Stay hydrated, move a little, and come back strong tomorrow.")
         return "\n".join(lines)
 
+    if sets_reps_info:
+        lines.append(f"<i>{escape(sets_reps_info)}</i>")
+
     for task in tasks:
-        lines.append(f"- {escape(task.get('title', ''))}")
+        lines.append(f"• {escape(task.get('title', ''))}")
         details = task.get("details", "")
         if details:
             lines.append(f"  {escape(details)}")
@@ -210,6 +213,7 @@ async def send_poll(
     topic_id: int,
     day_name: str,
     tasks: list[dict],
+    sets_reps_info: str = "",
 ) -> dict | None:
     """Send workout message and poll. Returns poll info dict or None."""
     base_url = f"https://api.telegram.org/bot{bot_token}"
@@ -217,7 +221,7 @@ async def send_poll(
     async with httpx.AsyncClient(timeout=30) as client:
         # Send the workout plan message to the topic
         motivation = await generate_motivation(day_name, tasks, datetime.now(ZoneInfo(os.getenv('BOT_TIMEZONE', 'Asia/Kolkata'))).date())
-        message_text = build_workout_message(day_name, tasks, motivation)
+        message_text = build_workout_message(day_name, tasks, motivation, sets_reps_info)
         msg_resp = await client.post(
             f"{base_url}/sendMessage",
             json={
@@ -316,6 +320,7 @@ def main() -> None:
         topic_id=topic_id,
         day_name=day_label,
         tasks=tasks,
+        sets_reps_info=sets_reps_info,
     ))
 
     if poll_info:

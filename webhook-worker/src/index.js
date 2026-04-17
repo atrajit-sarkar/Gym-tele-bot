@@ -196,6 +196,7 @@ async function computeProgress(dbPath, accessToken, userId, todayStr, todayWeekd
     todayStatus,
     todayTasks,
     history,
+    setsRepsInfo: cycleConfig ? cycleConfig.setsRepsInfo : '',
   };
 }
 
@@ -212,7 +213,7 @@ function parseCycleConfig(fields) {
   const restWeekdayIndices = (fields.rest_weekday_indices?.arrayValue?.values || [])
     .map((v) => Number(v.integerValue));
 
-  return { cycleStartDate, numCycleDays, gymWeekdayIndices, runningWeekdayIndices, restWeekdayIndices };
+  return { cycleStartDate, numCycleDays, gymWeekdayIndices, runningWeekdayIndices, restWeekdayIndices, setsRepsInfo: fields.sets_reps_info?.stringValue || '' };
 }
 
 function getCycleDayInfo(cycleConfig, targetDate) {
@@ -390,7 +391,8 @@ function buildProgressHTML(firstName, stats) {
   const offset = circumference - (progressPct / 100) * circumference;
 
   const todayTasksHtml = stats.todayTasks.length > 0
-    ? stats.todayTasks.map((t) =>
+    ? (stats.setsRepsInfo ? `<div class="today-sets-reps">${h(stats.setsRepsInfo)}</div>` : '') +
+      stats.todayTasks.map((t) =>
         `<div class="today-task">
           <span class="task-name">${h(t.title)}</span>
           ${t.details ? `<span class="task-detail">${h(t.details)}</span>` : ""}
@@ -424,6 +426,7 @@ function buildProgressHTML(firstName, stats) {
     weekday: entry.weekday,
     date: entry.date,
     exercises: (entry.exercises || []).map((e) => e.title),
+    setsReps: (entry.dayLabel && entry.dayLabel !== 'Rest' && entry.dayLabel !== 'Running') ? (stats.setsRepsInfo || '') : '',
   }));
 
   return `<!DOCTYPE html>
@@ -595,6 +598,16 @@ function buildProgressHTML(firstName, stats) {
     font-size: 13px;
     color: var(--text-dim);
   }
+  .today-sets-reps {
+    font-size: 13px;
+    color: var(--green);
+    font-weight: 600;
+    padding: 6px 10px;
+    margin-bottom: 8px;
+    background: var(--green-dim);
+    border-radius: 8px;
+    text-align: center;
+  }
 
   .badge {
     font-size: 11px;
@@ -755,6 +768,16 @@ function buildProgressHTML(firstName, stats) {
     font-weight: 700;
     min-width: 22px;
   }
+  .popup-sets-reps {
+    font-size: 13px;
+    color: var(--green);
+    font-weight: 600;
+    padding: 8px 12px;
+    margin-bottom: 12px;
+    background: var(--green-dim);
+    border-radius: var(--radius-sm);
+    text-align: center;
+  }
 </style>
 </head>
 <body>
@@ -833,9 +856,14 @@ function buildProgressHTML(firstName, stats) {
     document.getElementById('popupTitle').textContent = d.label;
     document.getElementById('popupSubtitle').textContent = d.weekday + ' \\u2022 ' + d.date;
     const container = document.getElementById('popupExercises');
-    container.innerHTML = d.exercises.map(function(ex, i) {
+    let html = '';
+    if (d.setsReps) {
+      html += '<div class="popup-sets-reps">' + d.setsReps.replace(/&/g,'&amp;').replace(/</g,'&lt;') + '</div>';
+    }
+    html += d.exercises.map(function(ex, i) {
       return '<div class="popup-exercise"><span class="ex-num">' + (i + 1) + '.</span> ' + ex.replace(/&/g,'&amp;').replace(/</g,'&lt;') + '</div>';
     }).join('');
+    container.innerHTML = html;
     document.getElementById('popupOverlay').classList.add('active');
   }
   function closePopup() {
