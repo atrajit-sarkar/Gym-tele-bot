@@ -93,36 +93,47 @@ async function handlePollAnswer(pollAnswer, env) {
 
   // Compute progress and DM the user
   try {
-    const progress = await computeProgress(dbPath, accessToken, userId, scheduledDate);
-    const report = buildProgressReport(firstName, progress);
-    await sendTelegramDM(env.TELEGRAM_BOT_TOKEN, userId, report);
-    console.log(`Sent progress DM to user ${userId}`);
+    const progress = await computeProgress(dbPath, accessToken, userId, scheduledDate, weekday, status);
+    const html = buildProgressHTML(firstName, progress);
+    await sendTelegramDocument(env.TELEGRAM_BOT_TOKEN, userId, html, `progress-${scheduledDate}.html`);
+    console.log(`Sent progress report to user ${userId}`);
   } catch (err) {
-    console.error(`Failed to send progress DM to ${userId}:`, err);
+    console.error(`Failed to send progress report to ${userId}:`, err);
   }
 }
 
 // ── Progress calculation ─────────────────────────────────────────────
 
-async function computeProgress(dbPath, accessToken, userId, todayStr) {
+async function computeProgress(dbPath, accessToken, userId, todayStr, todayWeekday, todayStatus) {
   // Fetch all checkins for this user
   const checkins = await firestoreList(dbPath, accessToken, `users/${userId}/checkins`);
   const checkinMap = {};
+  const checkinWeekdays = {};
   for (const doc of checkins) {
     const dateVal = doc.fields?.date?.stringValue;
     const statusVal = doc.fields?.status?.stringValue;
+    const wkday = doc.fields?.weekday?.stringValue;
     if (dateVal && statusVal) {
       checkinMap[dateVal] = statusVal;
+      if (wkday) checkinWeekdays[dateVal] = wkday;
     }
   }
 
-  // Fetch all routine tasks to determine scheduled weekdays
+  // Fetch all routine tasks to determine scheduled weekdays and task titles per day
   const tasks = await firestoreList(dbPath, accessToken, "routine_tasks");
   const scheduledWeekdays = new Set();
+  const tasksByWeekday = {};
   for (const task of tasks) {
     const idx = task.fields?.weekday_index?.integerValue;
+    const wkday = task.fields?.weekday?.stringValue;
+    const title = task.fields?.title?.stringValue || "";
+    const details = task.fields?.details?.stringValue || "";
     if (idx !== undefined) {
       scheduledWeekdays.add(Number(idx));
+    }
+    if (wkday) {
+      if (!tasksByWeekday[wkday]) tasksByWeekday[wkday] = [];
+      tasksByWeekday[wkday].push({ title, details });
     }
   }
 
@@ -130,7 +141,62 @@ async function computeProgress(dbPath, accessToken, userId, todayStr) {
   const userDoc = await firestoreGet(dbPath, accessToken, `users/${userId}`);
   const joinedOnStr = userDoc?.fields?.joined_on?.stringValue || todayStr;
 
-  return calculateStreaks(joinedOnStr, scheduledWeekdays, checkinMap, todayStr);
+  // Today's workout info
+  const todayTasks = tasksByWeekday[todayWeekday] || [];
+
+  const streaks = calculateStreaks(joinedOnStr, scheduledWeekdays, checkinMap, todayStr);
+
+  // Build history with weekday names and task titles
+  const history = buildHistory(joinedOnStr, scheduledWeekdays, checkinMap, checkinWeekdays, tasksByWeekday, todayStr);
+
+  return {
+    ...streaks,
+    todayWeekday,
+    todayStatus,
+    todayTasks,
+    history,
+  };
+}
+
+function buildHistory(joinedOnStr, scheduledWeekdays, checkins, checkinWeekdays, tasksByWeekday, todayStr) {
+  const WEEKDAY_NAMES = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
+  const joinedOn = new Date(joinedOnStr + "T00:00:00Z");
+  const today = new Date(todayStr + "T00:00:00Z");
+  const history = [];
+
+  const current = new Date(joinedOn);
+  while (current <= today) {
+    const dayOfWeek = (current.getUTCDay() + 6) % 7;
+    if (!scheduledWeekdays.has(dayOfWeek)) {
+      current.setUTCDate(current.getUTCDate() + 1);
+      continue;
+    }
+
+    const key = current.toISOString().slice(0, 10);
+    const weekdayName = checkinWeekdays[key] || WEEKDAY_NAMES[dayOfWeek];
+    let status = checkins[key] || null;
+
+    if (key === todayStr && !status) {
+      current.setUTCDate(current.getUTCDate() + 1);
+      continue;
+    }
+    if (key < todayStr && !status) {
+      status = "missed";
+    }
+    if (status) {
+      const dayTasks = tasksByWeekday[weekdayName] || [];
+      history.push({
+        date: key,
+        weekday: weekdayName,
+        status,
+        tasks: dayTasks.map((t) => t.title).filter(Boolean),
+      });
+    }
+
+    current.setUTCDate(current.getUTCDate() + 1);
+  }
+
+  return history.reverse(); // most recent first
 }
 
 function calculateStreaks(joinedOnStr, scheduledWeekdays, checkins, todayStr) {
@@ -192,16 +258,355 @@ function calculateStreaks(joinedOnStr, scheduledWeekdays, checkins, todayStr) {
   return { currentStreak, longestStreak, totalCompleted, totalMissed, completionRate };
 }
 
-function buildProgressReport(firstName, stats) {
-  return (
-    `<b>Progress Report for ${escapeHtml(firstName)}</b>\n` +
-    `\nCurrent streak: <b>${stats.currentStreak}</b>` +
-    `\nLongest streak: <b>${stats.longestStreak}</b>` +
-    `\nCompleted workout days: <b>${stats.totalCompleted}</b>` +
-    `\nMissed workout days: <b>${stats.totalMissed}</b>` +
-    `\nCompletion rate: <b>${stats.completionRate}%</b>` +
-    `\n\nKeep pushing! Consistency is everything.`
-  );
+function buildProgressHTML(firstName, stats) {
+  const h = escapeHtml;
+  const progressPct = stats.completionRate;
+  const circumference = 2 * Math.PI * 54;
+  const offset = circumference - (progressPct / 100) * circumference;
+
+  const todayTasksHtml = stats.todayTasks.length > 0
+    ? stats.todayTasks.map((t) =>
+        `<div class="today-task">
+          <span class="task-name">${h(t.title)}</span>
+          ${t.details ? `<span class="task-detail">${h(t.details)}</span>` : ""}
+        </div>`
+      ).join("")
+    : `<div class="today-task"><span class="task-name">Rest Day</span></div>`;
+
+  const todayStatusBadge = stats.todayStatus === "completed"
+    ? `<span class="badge badge-done">Going for it</span>`
+    : `<span class="badge badge-skip">Skipping</span>`;
+
+  const historyHtml = stats.history.map((entry) => {
+    const d = new Date(entry.date + "T00:00:00Z");
+    const dateStr = d.toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric", timeZone: "UTC" });
+    const icon = entry.status === "completed" ? "check" : entry.status === "skipped" ? "skip" : "miss";
+    const taskList = entry.tasks.length > 0 ? entry.tasks.join(", ") : "—";
+    return `<tr class="row-${icon}">
+      <td class="cell-date">
+        <span class="date-day">${dateStr}</span>
+        <span class="date-weekday">${h(entry.weekday)}</span>
+      </td>
+      <td class="cell-workout">${h(taskList)}</td>
+      <td class="cell-status"><span class="status-icon status-${icon}"></span></td>
+    </tr>`;
+  }).join("");
+
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Progress Report – ${h(firstName)}</title>
+<style>
+  :root {
+    --bg: #0a0a0f;
+    --surface: #13131a;
+    --surface-2: #1a1a24;
+    --border: #25253a;
+    --text: #e4e4ed;
+    --text-dim: #8888a0;
+    --accent: #6c5ce7;
+    --accent-glow: rgba(108, 92, 231, 0.15);
+    --green: #00d26a;
+    --green-dim: rgba(0, 210, 106, 0.12);
+    --red: #ff4757;
+    --red-dim: rgba(255, 71, 87, 0.12);
+    --yellow: #ffa502;
+    --yellow-dim: rgba(255, 165, 2, 0.12);
+    --radius: 16px;
+    --radius-sm: 10px;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    min-height: 100vh;
+    padding: 0;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .container {
+    max-width: 480px;
+    margin: 0 auto;
+    padding: 24px 16px 40px;
+  }
+
+  /* Header */
+  .header {
+    text-align: center;
+    padding: 32px 0 8px;
+  }
+  .header h1 {
+    font-size: 22px;
+    font-weight: 700;
+    letter-spacing: -0.3px;
+    color: var(--text);
+  }
+  .header .subtitle {
+    font-size: 13px;
+    color: var(--text-dim);
+    margin-top: 4px;
+  }
+
+  /* Progress Ring */
+  .ring-section {
+    display: flex;
+    justify-content: center;
+    padding: 28px 0 20px;
+  }
+  .ring-wrap {
+    position: relative;
+    width: 140px;
+    height: 140px;
+  }
+  .ring-wrap svg {
+    transform: rotate(-90deg);
+    width: 140px;
+    height: 140px;
+  }
+  .ring-bg { stroke: var(--surface-2); }
+  .ring-fill {
+    stroke: var(--accent);
+    stroke-linecap: round;
+    transition: stroke-dashoffset 1s ease;
+  }
+  .ring-label {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+  }
+  .ring-pct {
+    font-size: 32px;
+    font-weight: 800;
+    letter-spacing: -1px;
+    line-height: 1;
+  }
+  .ring-sub {
+    font-size: 11px;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    margin-top: 4px;
+  }
+
+  /* Stat Cards */
+  .stats {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+    margin-bottom: 20px;
+  }
+  .stat-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 16px;
+    text-align: center;
+  }
+  .stat-value {
+    font-size: 28px;
+    font-weight: 800;
+    letter-spacing: -0.5px;
+    line-height: 1;
+  }
+  .stat-value.accent { color: var(--accent); }
+  .stat-value.green { color: var(--green); }
+  .stat-label {
+    font-size: 11px;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    margin-top: 6px;
+  }
+
+  /* Today Section */
+  .section {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 20px;
+    margin-bottom: 16px;
+  }
+  .section-title {
+    font-size: 13px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: var(--text-dim);
+    margin-bottom: 14px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  .today-task {
+    padding: 10px 0;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+  .today-task:last-child { border-bottom: none; }
+  .task-name {
+    font-size: 15px;
+    font-weight: 600;
+  }
+  .task-detail {
+    font-size: 13px;
+    color: var(--text-dim);
+  }
+
+  .badge {
+    font-size: 11px;
+    font-weight: 600;
+    padding: 4px 10px;
+    border-radius: 20px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+  .badge-done { background: var(--green-dim); color: var(--green); }
+  .badge-skip { background: var(--yellow-dim); color: var(--yellow); }
+
+  /* History Table */
+  .history-table {
+    width: 100%;
+    border-collapse: collapse;
+  }
+  .history-table tr {
+    border-bottom: 1px solid var(--border);
+  }
+  .history-table tr:last-child { border-bottom: none; }
+  .history-table td {
+    padding: 12px 0;
+    vertical-align: middle;
+  }
+  .cell-date {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    width: 110px;
+  }
+  .date-day {
+    font-size: 14px;
+    font-weight: 600;
+  }
+  .date-weekday {
+    font-size: 11px;
+    color: var(--text-dim);
+  }
+  .cell-workout {
+    font-size: 13px;
+    color: var(--text-dim);
+    padding-left: 8px;
+    padding-right: 8px;
+  }
+  .cell-status {
+    text-align: right;
+    width: 36px;
+  }
+  .status-icon {
+    display: inline-block;
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+  }
+  .status-check { background: var(--green); box-shadow: 0 0 6px var(--green); }
+  .status-skip { background: var(--yellow); box-shadow: 0 0 6px var(--yellow); }
+  .status-miss { background: var(--red); box-shadow: 0 0 6px var(--red); }
+
+  .legend {
+    display: flex;
+    gap: 16px;
+    justify-content: center;
+    padding: 12px 0 0;
+  }
+  .legend-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 11px;
+    color: var(--text-dim);
+  }
+  .legend-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+  }
+
+  .footer {
+    text-align: center;
+    padding: 28px 0 8px;
+    font-size: 12px;
+    color: var(--text-dim);
+  }
+  .footer span { color: var(--accent); font-weight: 600; }
+</style>
+</head>
+<body>
+<div class="container">
+
+  <div class="header">
+    <h1>${h(firstName)}'s Progress</h1>
+    <div class="subtitle">Gym Buddy Report</div>
+  </div>
+
+  <div class="ring-section">
+    <div class="ring-wrap">
+      <svg viewBox="0 0 120 120">
+        <circle class="ring-bg" cx="60" cy="60" r="54" fill="none" stroke-width="8"/>
+        <circle class="ring-fill" cx="60" cy="60" r="54" fill="none" stroke-width="8"
+          stroke-dasharray="${circumference.toFixed(2)}"
+          stroke-dashoffset="${offset.toFixed(2)}"/>
+      </svg>
+      <div class="ring-label">
+        <span class="ring-pct">${Math.round(progressPct)}%</span>
+        <span class="ring-sub">Complete</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="stats">
+    <div class="stat-card">
+      <div class="stat-value accent">${stats.currentStreak}</div>
+      <div class="stat-label">Current Streak</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-value green">${stats.longestStreak}</div>
+      <div class="stat-label">Longest Streak</div>
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="section-title">
+      <span>Today — ${h(stats.todayWeekday)}</span>
+      ${todayStatusBadge}
+    </div>
+    ${todayTasksHtml}
+  </div>
+
+  <div class="section">
+    <div class="section-title"><span>Workout History</span></div>
+    <table class="history-table">
+      ${historyHtml}
+    </table>
+    <div class="legend">
+      <div class="legend-item"><div class="legend-dot" style="background:var(--green)"></div> Completed</div>
+      <div class="legend-item"><div class="legend-dot" style="background:var(--yellow)"></div> Skipped</div>
+      <div class="legend-item"><div class="legend-dot" style="background:var(--red)"></div> Missed</div>
+    </div>
+  </div>
+
+  <div class="footer">Powered by <span>Gym Buddy</span></div>
+
+</div>
+</body>
+</html>`;
 }
 
 // ── Firebase / Google auth ───────────────────────────────────────────
@@ -346,6 +751,40 @@ async function sendTelegramDM(botToken, userId, text) {
   );
   if (!resp.ok) {
     console.error(`Telegram DM to ${userId} failed:`, await resp.text());
+  }
+}
+
+async function sendTelegramDocument(botToken, userId, htmlContent, filename) {
+  const boundary = "----FormBoundary" + Date.now().toString(36);
+  const encoder = new TextEncoder();
+  const fileBytes = encoder.encode(htmlContent);
+
+  const parts = [
+    `--${boundary}\r\nContent-Disposition: form-data; name="chat_id"\r\n\r\n${userId}`,
+    `--${boundary}\r\nContent-Disposition: form-data; name="caption"\r\n\r\nYour progress report is ready. Open the file to view.`,
+    `--${boundary}\r\nContent-Disposition: form-data; name="document"; filename="${filename}"\r\nContent-Type: text/html\r\n\r\n`,
+  ];
+
+  const before = encoder.encode(parts.join("\r\n") + "\r\n");
+  const after = encoder.encode(`\r\n--${boundary}--\r\n`);
+
+  const body = new Uint8Array(before.length + fileBytes.length + after.length);
+  body.set(before, 0);
+  body.set(fileBytes, before.length);
+  body.set(after, before.length + fileBytes.length);
+
+  const resp = await fetch(
+    `https://api.telegram.org/bot${botToken}/sendDocument`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": `multipart/form-data; boundary=${boundary}`,
+      },
+      body: body.buffer,
+    }
+  );
+  if (!resp.ok) {
+    console.error(`Telegram sendDocument to ${userId} failed:`, await resp.text());
   }
 }
 
