@@ -188,7 +188,7 @@ async function computeProgress(dbPath, accessToken, userId, todayStr, todayWeekd
   const streaks = calculateStreaks(joinedOnStr, scheduledWeekdays, checkinMap, todayStr);
 
   // Build history with weekday names and task titles
-  const history = buildHistory(joinedOnStr, scheduledWeekdays, checkinMap, checkinWeekdays, tasksByWeekday, todayStr);
+  const history = buildHistory(joinedOnStr, scheduledWeekdays, checkinMap, checkinWeekdays, tasksByWeekday, todayStr, cycleConfig, tasksByCycleDay);
 
   return {
     ...streaks,
@@ -240,8 +240,9 @@ function getCycleDayInfo(cycleConfig, targetDate) {
   return { cycleDayIndex: cycleDay, dayType: "gym" };
 }
 
-function buildHistory(joinedOnStr, scheduledWeekdays, checkins, checkinWeekdays, tasksByWeekday, todayStr) {
+function buildHistory(joinedOnStr, scheduledWeekdays, checkins, checkinWeekdays, tasksByWeekday, todayStr, cycleConfig, tasksByCycleDay) {
   const WEEKDAY_NAMES = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
+  const DAY_LABELS = ["Day 1", "Day 2", "Day 3"];
   const joinedOn = new Date(joinedOnStr + "T00:00:00Z");
   const today = new Date(todayStr + "T00:00:00Z");
   const history = [];
@@ -252,10 +253,17 @@ function buildHistory(joinedOnStr, scheduledWeekdays, checkins, checkinWeekdays,
     const key = current.toISOString().slice(0, 10);
     const weekdayName = WEEKDAY_NAMES[dayOfWeek];
 
-    // Sunday = rest day — always show in history as "rest"
-    if (dayOfWeek === REST_DAY_INDEX) {
+    // Rest day indices (from cycle or Sunday)
+    if (cycleConfig && cycleConfig.restWeekdayIndices.includes(dayOfWeek)) {
       if (key <= todayStr) {
-        history.push({ date: key, weekday: weekdayName, status: "rest", tasks: ["Rest Day"] });
+        history.push({ date: key, weekday: weekdayName, status: "rest", dayLabel: "Rest", exercises: [] });
+      }
+      current.setUTCDate(current.getUTCDate() + 1);
+      continue;
+    }
+    if (!cycleConfig && dayOfWeek === REST_DAY_INDEX) {
+      if (key <= todayStr) {
+        history.push({ date: key, weekday: weekdayName, status: "rest", dayLabel: "Rest", exercises: [] });
       }
       current.setUTCDate(current.getUTCDate() + 1);
       continue;
@@ -276,12 +284,32 @@ function buildHistory(joinedOnStr, scheduledWeekdays, checkins, checkinWeekdays,
       status = "missed";
     }
     if (status) {
-      const dayTasks = tasksByWeekday[weekdayName] || [];
+      let dayLabel = "";
+      let exercises = [];
+
+      if (cycleConfig) {
+        if (cycleConfig.runningWeekdayIndices.includes(dayOfWeek)) {
+          dayLabel = "Running";
+          exercises = [{ title: "Running / Cardio" }];
+        } else {
+          const { cycleDayIndex } = getCycleDayInfo(cycleConfig, current);
+          if (cycleDayIndex !== null) {
+            dayLabel = DAY_LABELS[cycleDayIndex] || `Day ${cycleDayIndex + 1}`;
+            exercises = (tasksByCycleDay[cycleDayIndex] || []).map((t) => ({ title: t.title }));
+          }
+        }
+      } else {
+        const dayTasks = tasksByWeekday[weekdayName] || [];
+        dayLabel = dayTasks.map((t) => t.title).join(", ") || "—";
+        exercises = dayTasks.map((t) => ({ title: t.title }));
+      }
+
       history.push({
         date: key,
         weekday: weekdayName,
         status,
-        tasks: dayTasks.map((t) => t.title).filter(Boolean),
+        dayLabel,
+        exercises,
       });
     }
 
@@ -374,20 +402,29 @@ function buildProgressHTML(firstName, stats) {
     ? `<span class="badge badge-done">Going for it</span>`
     : `<span class="badge badge-skip">Skipping</span>`;
 
-  const historyHtml = stats.history.map((entry) => {
+  const historyHtml = stats.history.map((entry, idx) => {
     const d = new Date(entry.date + "T00:00:00Z");
     const dateStr = d.toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric", timeZone: "UTC" });
     const icon = entry.status === "completed" ? "check" : entry.status === "skipped" ? "skip" : entry.status === "rest" ? "rest" : "miss";
-    const taskList = entry.tasks.length > 0 ? entry.tasks.join(", ") : "—";
+    const hasExercises = entry.exercises && entry.exercises.length > 0 && entry.dayLabel !== "Rest";
+    const clickAttr = hasExercises ? `onclick="showPopup(${idx})" class="cell-workout clickable"` : `class="cell-workout"`;
     return `<tr class="row-${icon}">
       <td class="cell-date">
         <span class="date-day">${dateStr}</span>
         <span class="date-weekday">${h(entry.weekday)}</span>
       </td>
-      <td class="cell-workout">${h(taskList)}</td>
+      <td ${clickAttr}>${h(entry.dayLabel || '—')}</td>
       <td class="cell-status"><span class="status-icon status-${icon}"></span></td>
     </tr>`;
   }).join("");
+
+  // Build popup data as JSON for the script
+  const popupData = stats.history.map((entry) => ({
+    label: entry.dayLabel || '',
+    weekday: entry.weekday,
+    date: entry.date,
+    exercises: (entry.exercises || []).map((e) => e.title),
+  }));
 
   return `<!DOCTYPE html>
 <html lang="en">
@@ -644,6 +681,80 @@ function buildProgressHTML(firstName, stats) {
     color: var(--text-dim);
   }
   .footer span { color: var(--accent); font-weight: 600; }
+
+  /* Clickable workout cells */
+  .cell-workout.clickable {
+    cursor: pointer;
+    color: var(--accent);
+    font-weight: 600;
+    transition: color 0.15s;
+  }
+  .cell-workout.clickable:hover { color: #8b7cf7; }
+
+  /* Popup overlay */
+  .popup-overlay {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.7);
+    backdrop-filter: blur(4px);
+    z-index: 100;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+  }
+  .popup-overlay.active { display: flex; }
+  .popup-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 24px;
+    max-width: 380px;
+    width: 100%;
+    position: relative;
+    animation: popIn 0.2s ease;
+  }
+  @keyframes popIn { from { transform: scale(0.92); opacity: 0; } to { transform: scale(1); opacity: 1; } }
+  .popup-close {
+    position: absolute;
+    top: 12px;
+    right: 16px;
+    background: none;
+    border: none;
+    color: var(--text-dim);
+    font-size: 22px;
+    cursor: pointer;
+    line-height: 1;
+    padding: 4px;
+  }
+  .popup-close:hover { color: var(--text); }
+  .popup-title {
+    font-size: 16px;
+    font-weight: 700;
+    margin-bottom: 4px;
+    color: var(--accent);
+  }
+  .popup-subtitle {
+    font-size: 12px;
+    color: var(--text-dim);
+    margin-bottom: 16px;
+  }
+  .popup-exercise {
+    padding: 10px 0;
+    border-bottom: 1px solid var(--border);
+    font-size: 14px;
+    font-weight: 500;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .popup-exercise:last-child { border-bottom: none; }
+  .popup-exercise .ex-num {
+    color: var(--accent);
+    font-size: 12px;
+    font-weight: 700;
+    min-width: 22px;
+  }
 </style>
 </head>
 <body>
@@ -704,6 +815,35 @@ function buildProgressHTML(firstName, stats) {
   <div class="footer">Powered by <span>Gym Buddy</span></div>
 
 </div>
+
+<div class="popup-overlay" id="popupOverlay" onclick="if(event.target===this)closePopup()">
+  <div class="popup-card">
+    <button class="popup-close" onclick="closePopup()">&times;</button>
+    <div class="popup-title" id="popupTitle"></div>
+    <div class="popup-subtitle" id="popupSubtitle"></div>
+    <div id="popupExercises"></div>
+  </div>
+</div>
+
+<script>
+  const _pd = ${JSON.stringify(popupData)};
+  function showPopup(idx) {
+    const d = _pd[idx];
+    if (!d || !d.exercises.length) return;
+    document.getElementById('popupTitle').textContent = d.label;
+    document.getElementById('popupSubtitle').textContent = d.weekday + ' \\u2022 ' + d.date;
+    const container = document.getElementById('popupExercises');
+    container.innerHTML = d.exercises.map(function(ex, i) {
+      return '<div class="popup-exercise"><span class="ex-num">' + (i + 1) + '.</span> ' + ex.replace(/&/g,'&amp;').replace(/</g,'&lt;') + '</div>';
+    }).join('');
+    document.getElementById('popupOverlay').classList.add('active');
+  }
+  function closePopup() {
+    document.getElementById('popupOverlay').classList.remove('active');
+  }
+  document.addEventListener('keydown', function(e) { if (e.key === 'Escape') closePopup(); });
+</script>
+
 </body>
 </html>`;
 }
