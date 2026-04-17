@@ -179,7 +179,8 @@ async def send_poll(
     topic_id: int,
     day_name: str,
     tasks: list[dict],
-) -> None:
+) -> dict | None:
+    """Send workout message and poll. Returns poll info dict or None."""
     base_url = f"https://api.telegram.org/bot{bot_token}"
 
     async with httpx.AsyncClient(timeout=30) as client:
@@ -200,7 +201,7 @@ async def send_poll(
 
         if not tasks:
             LOGGER.info("No tasks for %s — skipping poll.", day_name)
-            return
+            return None
 
         # Send the poll to the same topic
         poll_resp = await client.post(
@@ -216,6 +217,39 @@ async def send_poll(
         )
         poll_resp.raise_for_status()
         LOGGER.info("Sent poll to topic %s", topic_id)
+
+        result = poll_resp.json().get("result", {})
+        poll_id = (result.get("poll") or {}).get("id")
+        message_id = result.get("message_id")
+        if poll_id:
+            return {"poll_id": poll_id, "message_id": message_id}
+        return None
+
+
+def store_poll_dispatch(
+    db: firestore.Client,
+    poll_id: str,
+    message_id: int,
+    chat_id: str,
+    topic_id: int,
+    day_name: str,
+    scheduled_date: date,
+    tasks: list[dict],
+) -> None:
+    """Store poll metadata in Firestore so the webhook worker can look it up."""
+    from datetime import timezone as tz
+    db.collection("poll_dispatches").document(poll_id).set({
+        "poll_id": poll_id,
+        "chat_id": chat_id,
+        "topic_id": topic_id,
+        "scheduled_date": scheduled_date.isoformat(),
+        "weekday": day_name,
+        "task_ids": [t.get("task_id", "") for t in tasks],
+        "task_titles": [t.get("title", "") for t in tasks],
+        "message_id": message_id,
+        "created_at": datetime.now(tz.utc),
+    })
+    LOGGER.info("Stored poll dispatch %s in Firestore.", poll_id)
 
 
 def main() -> None:
@@ -245,13 +279,25 @@ def main() -> None:
     tasks = get_tasks_for_day(db, day_name)
     LOGGER.info("Found %d task(s) for %s.", len(tasks), day_name)
 
-    asyncio.run(send_poll(
+    poll_info = asyncio.run(send_poll(
         bot_token=bot_token,
         chat_id=chat_id,
         topic_id=topic_id,
         day_name=day_name,
         tasks=tasks,
     ))
+
+    if poll_info:
+        store_poll_dispatch(
+            db=db,
+            poll_id=poll_info["poll_id"],
+            message_id=poll_info["message_id"],
+            chat_id=chat_id,
+            topic_id=topic_id,
+            day_name=day_name,
+            scheduled_date=today,
+            tasks=tasks,
+        )
 
     LOGGER.info("Done.")
 
