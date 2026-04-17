@@ -37,6 +37,19 @@ WEEKDAY_NAMES = [
     "Sunday",
 ]
 
+FALLBACK_QUOTES = [
+    "Discipline beats mood. Show up for yourself today.",
+    "Small reps become visible results. Keep the chain alive.",
+    "You do not need perfect conditions. You need your next set.",
+    "Consistency is the shortcut everybody wishes existed.",
+    "Train with intention today so tomorrow feels earned.",
+    "A strong routine turns motivation into momentum.",
+    "Every session is a vote for the person you want to become.",
+    "Progress is built quietly, one completed workout at a time.",
+    "Rest with purpose, train with intensity, repeat with confidence.",
+    "You are closer than you think. Keep your standard high today.",
+]
+
 # Map each weekday to its env var for the topic/thread ID
 TOPIC_ENV_VARS = {
     "Monday": "MONDAY_TOPIC_ID",
@@ -65,8 +78,88 @@ def get_tasks_for_day(db: firestore.Client, day_name: str) -> list[dict]:
     return sorted(tasks, key=lambda t: t.get("title", "").lower())
 
 
-def build_workout_message(day_name: str, tasks: list[dict]) -> str:
-    lines = [f"<b>{escape(day_name)} Routine</b>"]
+async def generate_motivation(day_name: str, tasks: list[dict], today: date) -> str:
+    """Generate a motivation message using Ollama, falling back to built-in quotes."""
+    api_url = os.getenv("OLLAMA_API_BASE_URL", "").strip()
+    api_key = os.getenv("OLLAMA_API_KEY", "").strip()
+    model = os.getenv("OLLAMA_MODEL", "gemini-3-flash-preview:cloud").strip()
+    timeout = float(os.getenv("OLLAMA_TIMEOUT_SECONDS", "45"))
+
+    if not api_key or not api_url:
+        LOGGER.info("Ollama API not configured — using fallback motivation.")
+        return _fallback_motivation(day_name, tasks, today)
+
+    prompt = _build_motivation_prompt(day_name, tasks)
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {api_key}",
+    }
+    payload = {
+        "model": model,
+        "messages": [
+            {
+                "role": "system",
+                "content": (
+                    "You are an elite but supportive gym coach. "
+                    "Write a short daily motivation message based on the provided workout plan. "
+                    "Requirements: 2 to 4 sentences, under 90 words, plain text only, no emojis, no hashtags, "
+                    "no markdown, and make it feel specific to the session."
+                ),
+            },
+            {"role": "user", "content": prompt},
+        ],
+        "stream": False,
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            resp = await client.post(f"{api_url.rstrip('/')}/chat", json=payload, headers=headers)
+            resp.raise_for_status()
+            data = resp.json()
+            text = ((data.get("message") or {}).get("content") or "").strip()
+            if text:
+                cleaned = " ".join(line.strip(" -\t") for line in text.splitlines() if line.strip())[:500]
+                LOGGER.info("Generated motivation via Ollama (%s).", model)
+                return cleaned
+    except Exception:
+        LOGGER.exception("Ollama motivation failed — using fallback.")
+
+    return _fallback_motivation(day_name, tasks, today)
+
+
+def _build_motivation_prompt(day_name: str, tasks: list[dict]) -> str:
+    if not tasks:
+        return (
+            f"Day: {day_name}\n"
+            "Plan: Recovery / Rest Day\n"
+            "Write motivation that respects recovery, consistency, and discipline."
+        )
+    lines = [f"Day: {day_name}", "Plan:"]
+    for task in tasks:
+        details = task.get("details", "").strip()
+        if details:
+            lines.append(f"- {task['title']}: {details}")
+        else:
+            lines.append(f"- {task['title']}")
+    lines.append("Write motivation that matches this training focus and pushes the athlete to complete the session.")
+    return "\n".join(lines)
+
+
+def _fallback_motivation(day_name: str, tasks: list[dict], today: date) -> str:
+    quote = FALLBACK_QUOTES[today.toordinal() % len(FALLBACK_QUOTES)]
+    if tasks:
+        titles = ", ".join(task["title"] for task in tasks[:2])
+        if len(tasks) > 2:
+            titles = f"{titles}, and more"
+        return f"{quote} Today's {day_name} focus is {titles}. Lock in and finish the work with clean form."
+    return (
+        "Recovery is part of the program. Use today to reset, refuel, and protect the streak by showing up strong "
+        "for the next session."
+    )
+
+
+def build_workout_message(day_name: str, tasks: list[dict], motivation: str) -> str:
+    lines = [f"<b>Daily Motivation</b>\n{escape(motivation)}", "", f"<b>{escape(day_name)} Routine</b>"]
     if not tasks:
         lines.append("Today is a recovery day. Stay hydrated, move a little, and come back strong tomorrow.")
         return "\n".join(lines)
@@ -91,7 +184,8 @@ async def send_poll(
 
     async with httpx.AsyncClient(timeout=30) as client:
         # Send the workout plan message to the topic
-        message_text = build_workout_message(day_name, tasks)
+        motivation = await generate_motivation(day_name, tasks, datetime.now(ZoneInfo(os.getenv('BOT_TIMEZONE', 'Asia/Kolkata'))).date())
+        message_text = build_workout_message(day_name, tasks, motivation)
         msg_resp = await client.post(
             f"{base_url}/sendMessage",
             json={
@@ -114,8 +208,8 @@ async def send_poll(
             json={
                 "chat_id": chat_id,
                 "message_thread_id": topic_id,
-                "question": f"Did you complete your {day_name} workout?",
-                "options": json.dumps(["Completed", "Skipped"]),
+                "question": f"Are you going for the {day_name} workout?",
+                "options": json.dumps(["Yes, let's go!", "Skipping today"]),
                 "is_anonymous": False,
                 "allows_multiple_answers": False,
             },

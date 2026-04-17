@@ -28,6 +28,10 @@ jobs:
           FIREBASE_SERVICE_ACCOUNT_BASE64: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_BASE64 }}
           FIRESTORE_DATABASE_ID: ${{ secrets.FIRESTORE_DATABASE_ID }}
           BOT_TIMEZONE: ${{ secrets.BOT_TIMEZONE }}
+          OLLAMA_API_BASE_URL: ${{ secrets.OLLAMA_API_BASE_URL }}
+          OLLAMA_API_KEY: ${{ secrets.OLLAMA_API_KEY }}
+          OLLAMA_MODEL: ${{ secrets.OLLAMA_MODEL }}
+          OLLAMA_TIMEOUT_SECONDS: ${{ secrets.OLLAMA_TIMEOUT_SECONDS }}
           MONDAY_TOPIC_ID: ${{ secrets.MONDAY_TOPIC_ID }}
           TUESDAY_TOPIC_ID: ${{ secrets.TUESDAY_TOPIC_ID }}
           WEDNESDAY_TOPIC_ID: ${{ secrets.WEDNESDAY_TOPIC_ID }}
