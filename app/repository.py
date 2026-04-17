@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import secrets
 from dataclasses import asdict, dataclass
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
 from google.cloud.firestore_v1 import Client
@@ -25,6 +25,49 @@ def normalize_weekday(value: str) -> str:
 @dataclass(frozen=True)
 class ScheduleSettings:
     reminder_time: str
+
+
+@dataclass(frozen=True)
+class CycleConfig:
+    cycle_start_date: date
+    gym_weekday_indices: list[int]
+    running_weekday_indices: list[int]
+    rest_weekday_indices: list[int]
+    num_cycle_days: int
+    sets_reps_info: str
+
+    @property
+    def all_active_indices(self) -> set[int]:
+        return set(self.gym_weekday_indices) | set(self.running_weekday_indices)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "CycleConfig":
+        return cls(
+            cycle_start_date=date.fromisoformat(data["cycle_start_date"]),
+            gym_weekday_indices=data["gym_weekday_indices"],
+            running_weekday_indices=data["running_weekday_indices"],
+            rest_weekday_indices=data["rest_weekday_indices"],
+            num_cycle_days=data["num_cycle_days"],
+            sets_reps_info=data.get("sets_reps_info", ""),
+        )
+
+    def get_day_info(self, target_date: date) -> tuple[int | None, str]:
+        """Return (cycle_day_index, day_type). day_type is 'gym', 'running', or 'rest'."""
+        weekday = target_date.weekday()
+        if weekday in self.rest_weekday_indices:
+            return None, "rest"
+        if weekday in self.running_weekday_indices:
+            return None, "running"
+        if weekday not in self.gym_weekday_indices:
+            return None, "rest"
+
+        days_elapsed = (target_date - self.cycle_start_date).days
+        week_number = days_elapsed // 7
+        gym_slots_sorted = sorted(self.gym_weekday_indices)
+        position_in_week = gym_slots_sorted.index(weekday)
+        gym_slot_index = week_number * len(gym_slots_sorted) + position_in_week
+        cycle_day = gym_slot_index % self.num_cycle_days
+        return cycle_day, "gym"
 
 
 class FirestoreRepository:
@@ -256,6 +299,85 @@ class FirestoreRepository:
         docs = [doc.to_dict() for doc in self.tasks_ref.where("weekday", "==", normalized_weekday).stream()]
         return sorted(docs, key=lambda item: item["title"].lower())
 
+    # ── Cycle-based routine support ──────────────────────────────────
+
+    def get_cycle_config(self) -> CycleConfig | None:
+        snapshot = self.db.collection("settings").document("routine_cycle").get()
+        if not snapshot.exists:
+            return None
+        data = snapshot.to_dict() or {}
+        if not data.get("enabled"):
+            return None
+        return CycleConfig.from_dict(data)
+
+    def set_cycle_config(self, config_data: dict[str, Any]) -> None:
+        config_data["updated_at"] = _utcnow()
+        self.db.collection("settings").document("routine_cycle").set(config_data)
+
+    def get_cycle_day_tasks(self, cycle_day: int) -> list[dict[str, Any]]:
+        docs = [doc.to_dict() for doc in self.tasks_ref.where("cycle_day", "==", cycle_day).stream()]
+        return sorted(docs, key=lambda item: item.get("order", 0))
+
+    def get_todays_routine(self, today: date) -> tuple[list[dict[str, Any]], str]:
+        """Return (tasks, day_label) considering any active cycle config."""
+        cycle_config = self.get_cycle_config()
+        day_name = today.strftime("%A")
+
+        if cycle_config is None:
+            tasks = self.get_tasks_for_day(day_name)
+            return tasks, day_name
+
+        cycle_day_index, day_type = cycle_config.get_day_info(today)
+
+        if day_type == "rest":
+            return [], f"{day_name} — Rest Day"
+
+        if day_type == "running":
+            running_task = {
+                "task_id": "running",
+                "title": "Running / Cardio",
+                "details": "",
+            }
+            return [running_task], f"{day_name} — Running Day"
+
+        tasks = self.get_cycle_day_tasks(cycle_day_index)
+        day_label = f"{day_name} — Day {cycle_day_index + 1}"
+        return tasks, day_label
+
+    def get_weekly_plan_with_cycle(self, reference_date: date) -> tuple[dict[str, tuple[list[dict[str, Any]], str]], str]:
+        """Return (plan, sets_reps_info) for the week containing reference_date."""
+        cycle_config = self.get_cycle_config()
+        if cycle_config is None:
+            plan = self.get_weekly_plan()
+            return {day: (tasks, day) for day, tasks in plan.items()}, ""
+
+        all_tasks = [doc.to_dict() for doc in self.tasks_ref.stream()]
+        tasks_by_cycle_day: dict[int, list[dict]] = {}
+        for task in all_tasks:
+            cd = task.get("cycle_day")
+            if cd is not None and cd >= 0:
+                tasks_by_cycle_day.setdefault(cd, []).append(task)
+        for cd in tasks_by_cycle_day:
+            tasks_by_cycle_day[cd].sort(key=lambda t: t.get("order", 0))
+
+        monday = reference_date - timedelta(days=reference_date.weekday())
+        result: dict[str, tuple[list[dict[str, Any]], str]] = {}
+        for i in range(7):
+            day_date = monday + timedelta(days=i)
+            day_name = WEEKDAY_NAMES[i]
+            cycle_day_index, day_type = cycle_config.get_day_info(day_date)
+
+            if day_type == "rest":
+                result[day_name] = ([], f"{day_name} — Rest Day")
+            elif day_type == "running":
+                running_task = {"task_id": "running", "title": "Running / Cardio", "details": ""}
+                result[day_name] = ([running_task], f"{day_name} — Running Day")
+            else:
+                tasks = tasks_by_cycle_day.get(cycle_day_index, [])
+                result[day_name] = (tasks, f"{day_name} — Day {cycle_day_index + 1}")
+
+        return result, cycle_config.sets_reps_info
+
     def get_checkin(self, user_id: int, scheduled_date: date) -> dict[str, Any] | None:
         ref = self.users_ref.document(str(user_id)).collection("checkins").document(scheduled_date.isoformat())
         snapshot = ref.get()
@@ -334,6 +456,9 @@ class FirestoreRepository:
         return date.today()
 
     def _get_scheduled_weekdays(self) -> set[int]:
+        cycle_config = self.get_cycle_config()
+        if cycle_config is not None:
+            return cycle_config.all_active_indices
         return {task["weekday_index"] for task in self.list_tasks()}
 
     def _get_user_checkins(self, user_id: int) -> dict[str, str]:

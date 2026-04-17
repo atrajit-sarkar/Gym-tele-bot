@@ -71,6 +71,32 @@ def build_weekly_plan(plan: dict[str, list[dict]], show_ids: bool = False) -> st
     return "\n".join(lines)
 
 
+def build_cycle_weekly_plan(
+    plan: dict[str, tuple[list[dict], str]],
+    sets_reps_info: str,
+    show_ids: bool = False,
+) -> str:
+    lines = ["<b>Weekly Gym Routine (Rotating Cycle)</b>"]
+    if sets_reps_info:
+        lines.append(f"<i>{escape(sets_reps_info)}</i>")
+
+    for day in WEEKDAY_NAMES:
+        tasks, label = plan.get(day, ([], day))
+        lines.append(f"\n<b>{escape(label)}</b>")
+        if not tasks:
+            lines.append("Rest / Recovery")
+            continue
+        for task in tasks:
+            task_line = escape(task["title"])
+            if show_ids and task.get("task_id") and task["task_id"] != "running":
+                task_line = f"{task_line} <code>({escape(task['task_id'])})</code>"
+            lines.append(f"• {task_line}")
+            if task.get("details"):
+                lines.append(f"  {escape(task['details'])}")
+
+    return "\n".join(lines)
+
+
 def build_today_message(day_name: str, tasks: list[dict], motivation_text: str) -> str:
     lines = [motivation_text, "", f"<b>{escape(day_name)} Routine</b>"]
     if not tasks:

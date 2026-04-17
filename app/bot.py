@@ -18,6 +18,7 @@ from telegram.ext import (
 from app.config import AppConfig
 from app.firebase import initialize_firestore
 from app.messages import (
+    build_cycle_weekly_plan,
     build_help_text,
     build_stats_message,
     build_today_message,
@@ -103,6 +104,13 @@ class GymMotivationBot:
         LOGGER.info("Starting bot polling loop.")
         self.application.run_polling(allowed_updates=Update.ALL_TYPES)
 
+    def _get_plan_text(self, show_ids: bool) -> str:
+        cycle_config = self.repository.get_cycle_config()
+        if cycle_config is not None:
+            plan, sets_info = self.repository.get_weekly_plan_with_cycle(self._local_today())
+            return build_cycle_weekly_plan(plan, sets_info, show_ids=show_ids)
+        return build_weekly_plan(self.repository.get_weekly_plan(), show_ids=show_ids)
+
     async def start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not update.effective_user or not update.effective_chat or not update.message:
             return
@@ -127,7 +135,7 @@ class GymMotivationBot:
         )
 
         await update.message.reply_text(
-            build_weekly_plan(self.repository.get_weekly_plan(), show_ids=is_admin),
+            self._get_plan_text(show_ids=is_admin),
             parse_mode=ParseMode.HTML,
         )
 
@@ -157,10 +165,7 @@ class GymMotivationBot:
         if not await self._require_active_member(update):
             return
         await update.message.reply_text(
-            build_weekly_plan(
-                self.repository.get_weekly_plan(),
-                show_ids=self.repository.is_admin(update.effective_user.id),
-            ),
+            self._get_plan_text(show_ids=self.repository.is_admin(update.effective_user.id)),
             parse_mode=ParseMode.HTML,
         )
 
@@ -200,7 +205,7 @@ class GymMotivationBot:
         if not update.message:
             return
         await update.message.reply_text(
-            build_weekly_plan(self.repository.get_weekly_plan(), show_ids=True),
+            self._get_plan_text(show_ids=True),
             parse_mode=ParseMode.HTML,
         )
 
@@ -405,18 +410,17 @@ class GymMotivationBot:
 
     async def _send_today_flow(self, chat_id: int, user_id: int, bot, force_poll: bool) -> None:
         today = self._local_today()
-        day_name = today.strftime("%A")
-        tasks = self.repository.get_tasks_for_day(day_name)
+        tasks, day_label = self.repository.get_todays_routine(today)
         motivation = await self.motivation_service.get_daily_motivation_message(
             today=today,
-            day_name=day_name,
+            day_name=day_label,
             tasks=tasks,
         )
 
         try:
             await bot.send_message(
                 chat_id=chat_id,
-                text=build_today_message(day_name, tasks, motivation),
+                text=build_today_message(day_label, tasks, motivation),
                 parse_mode=ParseMode.HTML,
             )
         except Forbidden:
@@ -436,7 +440,7 @@ class GymMotivationBot:
         try:
             poll_message = await bot.send_poll(
                 chat_id=chat_id,
-                question=f"Did you complete your {day_name} workout?",
+                question=f"Did you complete your {day_label} workout?",
                 options=["Completed", "Skipped"],
                 is_anonymous=False,
                 allows_multiple_answers=False,
@@ -455,7 +459,7 @@ class GymMotivationBot:
             LOGGER.exception("Failed to send poll to user %s", user_id)
 
     async def _broadcast_plan(self, bot) -> None:
-        plan_message = build_weekly_plan(self.repository.get_weekly_plan(), show_ids=False)
+        plan_message = self._get_plan_text(show_ids=False)
         for user in self.repository.list_active_users():
             try:
                 await bot.send_message(

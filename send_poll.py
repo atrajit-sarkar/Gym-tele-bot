@@ -21,6 +21,8 @@ import firebase_admin
 import httpx
 from firebase_admin import credentials, firestore
 
+from app.repository import CycleConfig
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | %(levelname)s | %(message)s",
@@ -76,6 +78,35 @@ def get_tasks_for_day(db: firestore.Client, day_name: str) -> list[dict]:
     docs = db.collection("routine_tasks").where("weekday", "==", day_name).stream()
     tasks = [doc.to_dict() for doc in docs]
     return sorted(tasks, key=lambda t: t.get("title", "").lower())
+
+
+def get_cycle_day_tasks(db: firestore.Client, cycle_day: int) -> list[dict]:
+    docs = db.collection("routine_tasks").where("cycle_day", "==", cycle_day).stream()
+    tasks = [doc.to_dict() for doc in docs]
+    return sorted(tasks, key=lambda t: t.get("order", 0))
+
+
+def get_todays_routine(db: firestore.Client, today: date) -> tuple[list[dict], str]:
+    """Return (tasks, day_label) considering any active cycle config."""
+    snapshot = db.collection("settings").document("routine_cycle").get()
+    if snapshot.exists:
+        data = snapshot.to_dict() or {}
+        if data.get("enabled"):
+            cycle_config = CycleConfig.from_dict(data)
+            cycle_day_index, day_type = cycle_config.get_day_info(today)
+            day_name = today.strftime("%A")
+
+            if day_type == "rest":
+                return [], f"{day_name} — Rest Day"
+            if day_type == "running":
+                return [{"task_id": "running", "title": "Running / Cardio", "details": ""}], f"{day_name} — Running Day"
+
+            tasks = get_cycle_day_tasks(db, cycle_day_index)
+            return tasks, f"{day_name} — Day {cycle_day_index + 1}"
+
+    day_name = today.strftime("%A")
+    tasks = get_tasks_for_day(db, day_name)
+    return tasks, day_name
 
 
 async def generate_motivation(day_name: str, tasks: list[dict], today: date) -> str:
@@ -276,14 +307,14 @@ def main() -> None:
     LOGGER.info("Today is %s (%s). Sending poll to topic %s.", today.isoformat(), day_name, topic_id)
 
     db = get_firestore_client()
-    tasks = get_tasks_for_day(db, day_name)
-    LOGGER.info("Found %d task(s) for %s.", len(tasks), day_name)
+    tasks, day_label = get_todays_routine(db, today)
+    LOGGER.info("Found %d task(s) for %s (%s).", len(tasks), day_name, day_label)
 
     poll_info = asyncio.run(send_poll(
         bot_token=bot_token,
         chat_id=chat_id,
         topic_id=topic_id,
-        day_name=day_name,
+        day_name=day_label,
         tasks=tasks,
     ))
 

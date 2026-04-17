@@ -25,6 +25,8 @@ import firebase_admin
 import httpx
 from firebase_admin import credentials, firestore
 
+from app.repository import CycleConfig
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | %(levelname)s | %(message)s",
@@ -330,9 +332,22 @@ async def run() -> None:
     day_name = today.strftime("%A")
     today_str = today.isoformat()
 
-    # Sunday is rest day — skip entirely
-    if today.weekday() == REST_DAY_INDEX:
-        LOG.info("Today is Sunday (rest day). Nothing to do.")
+    # Check if today is a rest day (cycle or legacy)
+    cycle_snapshot = db.collection("settings").document("routine_cycle").get()
+    is_rest_day = False
+    if cycle_snapshot.exists:
+        cycle_data = cycle_snapshot.to_dict() or {}
+        if cycle_data.get("enabled"):
+            cycle_config = CycleConfig.from_dict(cycle_data)
+            _, day_type = cycle_config.get_day_info(today)
+            if day_type == "rest":
+                is_rest_day = True
+
+    if not is_rest_day and today.weekday() == REST_DAY_INDEX:
+        is_rest_day = True
+
+    if is_rest_day:
+        LOG.info("Today is a rest day. Nothing to do.")
         return
 
     LOG.info("Checking missed responses for %s (%s)", today_str, day_name)
@@ -360,6 +375,14 @@ async def run() -> None:
     scheduled_weekdays: set[int] = set()
     tasks_by_weekday: dict[str, list] = {}
     tasks_by_weekday_full: dict[str, list[dict]] = {}
+
+    # Check for cycle config to determine scheduled weekdays
+    if cycle_snapshot.exists:
+        cycle_data_check = cycle_snapshot.to_dict() or {}
+        if cycle_data_check.get("enabled"):
+            cycle_cfg = CycleConfig.from_dict(cycle_data_check)
+            scheduled_weekdays = cycle_cfg.all_active_indices
+
     for td in task_docs:
         d = td.to_dict()
         idx = d.get("weekday_index")
