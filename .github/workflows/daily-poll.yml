@@ -1,0 +1,38 @@
+name: Daily Workout Poll
+
+on:
+  schedule:
+    # Runs every day at 01:30 UTC (07:00 IST)
+    - cron: "30 1 * * *"
+  workflow_dispatch: # Allow manual trigger
+
+jobs:
+  send-poll:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install firebase-admin httpx tzdata
+
+      - name: Send daily poll
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_GROUP_CHAT_ID: ${{ secrets.TELEGRAM_GROUP_CHAT_ID }}
+          FIREBASE_SERVICE_ACCOUNT_BASE64: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_BASE64 }}
+          FIRESTORE_DATABASE_ID: ${{ secrets.FIRESTORE_DATABASE_ID }}
+          BOT_TIMEZONE: ${{ secrets.BOT_TIMEZONE }}
+          MONDAY_TOPIC_ID: ${{ secrets.MONDAY_TOPIC_ID }}
+          TUESDAY_TOPIC_ID: ${{ secrets.TUESDAY_TOPIC_ID }}
+          WEDNESDAY_TOPIC_ID: ${{ secrets.WEDNESDAY_TOPIC_ID }}
+          THURSDAY_TOPIC_ID: ${{ secrets.THURSDAY_TOPIC_ID }}
+          FRIDAY_TOPIC_ID: ${{ secrets.FRIDAY_TOPIC_ID }}
+          SATURDAY_TOPIC_ID: ${{ secrets.SATURDAY_TOPIC_ID }}
+          SUNDAY_TOPIC_ID: ${{ secrets.SUNDAY_TOPIC_ID }}
+        run: python send_poll.py
