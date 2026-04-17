@@ -410,7 +410,7 @@ class GymMotivationBot:
 
     async def _send_today_flow(self, chat_id: int, user_id: int, bot, force_poll: bool) -> None:
         today = self._local_today()
-        tasks, day_label = self.repository.get_todays_routine(today)
+        tasks, day_label, sets_reps_info = self.repository.get_todays_routine(today)
         motivation = await self.motivation_service.get_daily_motivation_message(
             today=today,
             day_name=day_label,
@@ -420,7 +420,7 @@ class GymMotivationBot:
         try:
             await bot.send_message(
                 chat_id=chat_id,
-                text=build_today_message(day_label, tasks, motivation),
+                text=build_today_message(day_label, tasks, motivation, sets_reps_info),
                 parse_mode=ParseMode.HTML,
             )
         except Forbidden:

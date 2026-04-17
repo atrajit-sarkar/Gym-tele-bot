@@ -318,19 +318,19 @@ class FirestoreRepository:
         docs = [doc.to_dict() for doc in self.tasks_ref.where("cycle_day", "==", cycle_day).stream()]
         return sorted(docs, key=lambda item: item.get("order", 0))
 
-    def get_todays_routine(self, today: date) -> tuple[list[dict[str, Any]], str]:
-        """Return (tasks, day_label) considering any active cycle config."""
+    def get_todays_routine(self, today: date) -> tuple[list[dict[str, Any]], str, str]:
+        """Return (tasks, day_label, sets_reps_info) considering any active cycle config."""
         cycle_config = self.get_cycle_config()
         day_name = today.strftime("%A")
 
         if cycle_config is None:
             tasks = self.get_tasks_for_day(day_name)
-            return tasks, day_name
+            return tasks, day_name, ""
 
         cycle_day_index, day_type = cycle_config.get_day_info(today)
 
         if day_type == "rest":
-            return [], f"{day_name} — Rest Day"
+            return [], f"{day_name} — Rest Day", ""
 
         if day_type == "running":
             running_task = {
@@ -338,11 +338,11 @@ class FirestoreRepository:
                 "title": "Running / Cardio",
                 "details": "",
             }
-            return [running_task], f"{day_name} — Running Day"
+            return [running_task], f"{day_name} — Running Day", ""
 
         tasks = self.get_cycle_day_tasks(cycle_day_index)
         day_label = f"{day_name} — Day {cycle_day_index + 1}"
-        return tasks, day_label
+        return tasks, day_label, cycle_config.sets_reps_info
 
     def get_weekly_plan_with_cycle(self, reference_date: date) -> tuple[dict[str, tuple[list[dict[str, Any]], str]], str]:
         """Return (plan, sets_reps_info) for the week containing reference_date."""

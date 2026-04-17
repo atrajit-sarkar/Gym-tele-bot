@@ -375,13 +375,17 @@ async def run() -> None:
     scheduled_weekdays: set[int] = set()
     tasks_by_weekday: dict[str, list] = {}
     tasks_by_weekday_full: dict[str, list[dict]] = {}
+    tasks_by_cycle_day: dict[int, list[dict]] = {}
 
     # Check for cycle config to determine scheduled weekdays
+    cycle_enabled = False
+    cycle_cfg = None
     if cycle_snapshot.exists:
         cycle_data_check = cycle_snapshot.to_dict() or {}
         if cycle_data_check.get("enabled"):
             cycle_cfg = CycleConfig.from_dict(cycle_data_check)
             scheduled_weekdays = cycle_cfg.all_active_indices
+            cycle_enabled = True
 
     for td in task_docs:
         d = td.to_dict()
@@ -389,13 +393,30 @@ async def run() -> None:
         wkday = d.get("weekday", "")
         title = d.get("title", "")
         details = d.get("details", "")
-        if idx is not None:
+        cycle_day = d.get("cycle_day")
+        if idx is not None and not cycle_enabled:
             scheduled_weekdays.add(int(idx))
         if wkday:
             tasks_by_weekday.setdefault(wkday, []).append(title or "\u2014")
             tasks_by_weekday_full.setdefault(wkday, []).append({"title": title, "details": details})
+        if cycle_day is not None:
+            tasks_by_cycle_day.setdefault(int(cycle_day), []).append({"title": title, "details": details, "order": d.get("order", 0)})
 
-    today_tasks = tasks_by_weekday_full.get(day_name, [])
+    # Sort cycle day tasks by order
+    for cd in tasks_by_cycle_day:
+        tasks_by_cycle_day[cd].sort(key=lambda t: t["order"])
+
+    # Determine today's tasks
+    if cycle_enabled and cycle_cfg is not None:
+        cycle_day_index, day_type = cycle_cfg.get_day_info(today)
+        if day_type == "running":
+            today_tasks = [{"title": "Running / Cardio", "details": ""}]
+        elif day_type == "gym" and cycle_day_index is not None:
+            today_tasks = tasks_by_cycle_day.get(cycle_day_index, [])
+        else:
+            today_tasks = []
+    else:
+        today_tasks = tasks_by_weekday_full.get(day_name, [])
 
     missed_users: list[dict] = []
     for user_doc in user_docs:

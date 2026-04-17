@@ -112,7 +112,7 @@ def main() -> None:
                 "cycle_day": cycle_day,
                 "order": order,
                 "title": exercise_name,
-                "details": SETS_REPS,
+                "details": "",
                 "label": day_info["label"],
                 "created_at": now,
                 "updated_at": now,

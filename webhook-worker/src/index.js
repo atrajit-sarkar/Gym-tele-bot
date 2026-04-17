@@ -120,15 +120,32 @@ async function computeProgress(dbPath, accessToken, userId, todayStr, todayWeekd
     }
   }
 
-  // Fetch all routine tasks to determine scheduled weekdays and task titles per day
+  // Check for cycle config
+  const cycleDoc = await firestoreGet(dbPath, accessToken, "settings/routine_cycle");
+  let cycleConfig = null;
+  if (cycleDoc && cycleDoc.fields?.enabled?.booleanValue) {
+    cycleConfig = parseCycleConfig(cycleDoc.fields);
+  }
+
+  // Fetch all routine tasks
   const tasks = await firestoreList(dbPath, accessToken, "routine_tasks");
   const scheduledWeekdays = new Set();
   const tasksByWeekday = {};
+  const tasksByCycleDay = {};
+
   for (const task of tasks) {
-    const idx = task.fields?.weekday_index?.integerValue;
-    const wkday = task.fields?.weekday?.stringValue;
     const title = task.fields?.title?.stringValue || "";
     const details = task.fields?.details?.stringValue || "";
+    const cycleDayVal = task.fields?.cycle_day?.integerValue;
+
+    if (cycleDayVal !== undefined) {
+      const cd = Number(cycleDayVal);
+      if (!tasksByCycleDay[cd]) tasksByCycleDay[cd] = [];
+      tasksByCycleDay[cd].push({ title, details, order: Number(task.fields?.order?.integerValue || 0) });
+    }
+
+    const idx = task.fields?.weekday_index?.integerValue;
+    const wkday = task.fields?.weekday?.stringValue;
     if (idx !== undefined) {
       scheduledWeekdays.add(Number(idx));
     }
@@ -138,12 +155,35 @@ async function computeProgress(dbPath, accessToken, userId, todayStr, todayWeekd
     }
   }
 
+  // Sort cycle day tasks by order
+  for (const cd of Object.keys(tasksByCycleDay)) {
+    tasksByCycleDay[cd].sort((a, b) => a.order - b.order);
+  }
+
+  // If cycle config is active, override scheduledWeekdays and todayTasks
+  let todayTasks;
+  if (cycleConfig) {
+    scheduledWeekdays.clear();
+    for (const idx of cycleConfig.gymWeekdayIndices) scheduledWeekdays.add(idx);
+    for (const idx of cycleConfig.runningWeekdayIndices) scheduledWeekdays.add(idx);
+
+    const todayDate = new Date(todayStr + "T00:00:00Z");
+    const { cycleDayIndex, dayType } = getCycleDayInfo(cycleConfig, todayDate);
+
+    if (dayType === "running") {
+      todayTasks = [{ title: "Running / Cardio", details: "" }];
+    } else if (dayType === "gym" && cycleDayIndex !== null) {
+      todayTasks = tasksByCycleDay[cycleDayIndex] || [];
+    } else {
+      todayTasks = [];
+    }
+  } else {
+    todayTasks = tasksByWeekday[todayWeekday] || [];
+  }
+
   // Fetch user's joined_on date
   const userDoc = await firestoreGet(dbPath, accessToken, `users/${userId}`);
   const joinedOnStr = userDoc?.fields?.joined_on?.stringValue || todayStr;
-
-  // Today's workout info
-  const todayTasks = tasksByWeekday[todayWeekday] || [];
 
   const streaks = calculateStreaks(joinedOnStr, scheduledWeekdays, checkinMap, todayStr);
 
@@ -157,6 +197,47 @@ async function computeProgress(dbPath, accessToken, userId, todayStr, todayWeekd
     todayTasks,
     history,
   };
+}
+
+// ── Cycle config parsing ─────────────────────────────────────────────
+
+function parseCycleConfig(fields) {
+  const cycleStartDate = fields.cycle_start_date?.stringValue;
+  const numCycleDays = Number(fields.num_cycle_days?.integerValue || 3);
+
+  const gymWeekdayIndices = (fields.gym_weekday_indices?.arrayValue?.values || [])
+    .map((v) => Number(v.integerValue));
+  const runningWeekdayIndices = (fields.running_weekday_indices?.arrayValue?.values || [])
+    .map((v) => Number(v.integerValue));
+  const restWeekdayIndices = (fields.rest_weekday_indices?.arrayValue?.values || [])
+    .map((v) => Number(v.integerValue));
+
+  return { cycleStartDate, numCycleDays, gymWeekdayIndices, runningWeekdayIndices, restWeekdayIndices };
+}
+
+function getCycleDayInfo(cycleConfig, targetDate) {
+  // targetDate is a JS Date in UTC
+  const weekday = (targetDate.getUTCDay() + 6) % 7; // Mon=0 ... Sun=6
+
+  if (cycleConfig.restWeekdayIndices.includes(weekday)) {
+    return { cycleDayIndex: null, dayType: "rest" };
+  }
+  if (cycleConfig.runningWeekdayIndices.includes(weekday)) {
+    return { cycleDayIndex: null, dayType: "running" };
+  }
+  if (!cycleConfig.gymWeekdayIndices.includes(weekday)) {
+    return { cycleDayIndex: null, dayType: "rest" };
+  }
+
+  const startDate = new Date(cycleConfig.cycleStartDate + "T00:00:00Z");
+  const daysElapsed = Math.round((targetDate - startDate) / (1000 * 60 * 60 * 24));
+  const weekNumber = Math.floor(daysElapsed / 7);
+  const gymSlotsSorted = [...cycleConfig.gymWeekdayIndices].sort((a, b) => a - b);
+  const positionInWeek = gymSlotsSorted.indexOf(weekday);
+  const gymSlotIndex = weekNumber * gymSlotsSorted.length + positionInWeek;
+  const cycleDay = ((gymSlotIndex % cycleConfig.numCycleDays) + cycleConfig.numCycleDays) % cycleConfig.numCycleDays;
+
+  return { cycleDayIndex: cycleDay, dayType: "gym" };
 }
 
 function buildHistory(joinedOnStr, scheduledWeekdays, checkins, checkinWeekdays, tasksByWeekday, todayStr) {

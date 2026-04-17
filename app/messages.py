@@ -97,14 +97,17 @@ def build_cycle_weekly_plan(
     return "\n".join(lines)
 
 
-def build_today_message(day_name: str, tasks: list[dict], motivation_text: str) -> str:
+def build_today_message(day_name: str, tasks: list[dict], motivation_text: str, sets_reps_info: str = "") -> str:
     lines = [motivation_text, "", f"<b>{escape(day_name)} Routine</b>"]
     if not tasks:
         lines.append("Today is a recovery day. Stay hydrated, move a little, and come back strong tomorrow.")
         return "\n".join(lines)
 
+    if sets_reps_info:
+        lines.append(f"<i>{escape(sets_reps_info)}</i>")
+
     for task in tasks:
-        lines.append(f"- {escape(task['title'])}")
+        lines.append(f"• {escape(task['title'])}")
         if task.get("details"):
             lines.append(f"  {escape(task['details'])}")
 

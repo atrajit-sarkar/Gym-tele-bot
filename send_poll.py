@@ -86,8 +86,8 @@ def get_cycle_day_tasks(db: firestore.Client, cycle_day: int) -> list[dict]:
     return sorted(tasks, key=lambda t: t.get("order", 0))
 
 
-def get_todays_routine(db: firestore.Client, today: date) -> tuple[list[dict], str]:
-    """Return (tasks, day_label) considering any active cycle config."""
+def get_todays_routine(db: firestore.Client, today: date) -> tuple[list[dict], str, str]:
+    """Return (tasks, day_label, sets_reps_info) considering any active cycle config."""
     snapshot = db.collection("settings").document("routine_cycle").get()
     if snapshot.exists:
         data = snapshot.to_dict() or {}
@@ -97,16 +97,16 @@ def get_todays_routine(db: firestore.Client, today: date) -> tuple[list[dict], s
             day_name = today.strftime("%A")
 
             if day_type == "rest":
-                return [], f"{day_name} — Rest Day"
+                return [], f"{day_name} — Rest Day", ""
             if day_type == "running":
-                return [{"task_id": "running", "title": "Running / Cardio", "details": ""}], f"{day_name} — Running Day"
+                return [{"task_id": "running", "title": "Running / Cardio", "details": ""}], f"{day_name} — Running Day", ""
 
             tasks = get_cycle_day_tasks(db, cycle_day_index)
-            return tasks, f"{day_name} — Day {cycle_day_index + 1}"
+            return tasks, f"{day_name} — Day {cycle_day_index + 1}", data.get("sets_reps_info", "")
 
     day_name = today.strftime("%A")
     tasks = get_tasks_for_day(db, day_name)
-    return tasks, day_name
+    return tasks, day_name, ""
 
 
 async def generate_motivation(day_name: str, tasks: list[dict], today: date) -> str:
@@ -307,7 +307,7 @@ def main() -> None:
     LOGGER.info("Today is %s (%s). Sending poll to topic %s.", today.isoformat(), day_name, topic_id)
 
     db = get_firestore_client()
-    tasks, day_label = get_todays_routine(db, today)
+    tasks, day_label, sets_reps_info = get_todays_routine(db, today)
     LOGGER.info("Found %d task(s) for %s (%s).", len(tasks), day_name, day_label)
 
     poll_info = asyncio.run(send_poll(
