@@ -162,6 +162,7 @@ async function computeProgress(dbPath, accessToken, userId, todayStr, todayWeekd
 
   // If cycle config is active, override scheduledWeekdays and todayTasks
   let todayTasks;
+  let todayDayType = "gym";
   if (cycleConfig) {
     scheduledWeekdays.clear();
     for (const idx of cycleConfig.gymWeekdayIndices) scheduledWeekdays.add(idx);
@@ -169,6 +170,7 @@ async function computeProgress(dbPath, accessToken, userId, todayStr, todayWeekd
 
     const todayDate = new Date(todayStr + "T00:00:00Z");
     const { cycleDayIndex, dayType } = getCycleDayInfo(cycleConfig, todayDate);
+    todayDayType = dayType;
 
     if (dayType === "running") {
       todayTasks = [{ title: "Running / Cardio", details: "" }];
@@ -196,7 +198,8 @@ async function computeProgress(dbPath, accessToken, userId, todayStr, todayWeekd
     todayStatus,
     todayTasks,
     history,
-    setsRepsInfo: cycleConfig ? cycleConfig.setsRepsInfo : '',
+    setsRepsInfo: (cycleConfig && todayDayType === 'gym') ? cycleConfig.setsRepsInfo : '',
+    globalSetsRepsInfo: cycleConfig ? cycleConfig.setsRepsInfo : '',
   };
 }
 
@@ -426,7 +429,7 @@ function buildProgressHTML(firstName, stats) {
     weekday: entry.weekday,
     date: entry.date,
     exercises: (entry.exercises || []).map((e) => e.title),
-    setsReps: (entry.dayLabel && entry.dayLabel !== 'Rest' && entry.dayLabel !== 'Running') ? (stats.setsRepsInfo || '') : '',
+    setsReps: (entry.dayLabel && entry.dayLabel !== 'Rest' && entry.dayLabel !== 'Running') ? (stats.globalSetsRepsInfo || '') : '',
   }));
 
   return `<!DOCTYPE html>
