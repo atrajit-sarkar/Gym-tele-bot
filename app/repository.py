@@ -453,7 +453,17 @@ class FirestoreRepository:
         joined_on = data.get("joined_on")
         if joined_on:
             return date.fromisoformat(joined_on)
-        return date.today()
+
+        # Fallback: use the earliest checkin date instead of today
+        checkin_docs = self.users_ref.document(str(user_id)).collection("checkins").stream()
+        earliest: date | None = None
+        for doc in checkin_docs:
+            d = (doc.to_dict() or {}).get("date")
+            if d:
+                dt = date.fromisoformat(d)
+                if earliest is None or dt < earliest:
+                    earliest = dt
+        return earliest or date.today()
 
     def _get_scheduled_weekdays(self) -> set[int]:
         cycle_config = self.get_cycle_config()
