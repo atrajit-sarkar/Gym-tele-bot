@@ -477,8 +477,9 @@ class FirestoreRepository:
         for doc in docs:
             data = doc.to_dict() or {}
             status = data.get("status")
-            if status:
-                mapping[data["date"]] = status
+            date_key = data.get("date")
+            if status and date_key:
+                mapping[date_key] = status
         return mapping
 
     def recalculate_user_stats(self, user_id: int, today: date) -> StreakSummary:

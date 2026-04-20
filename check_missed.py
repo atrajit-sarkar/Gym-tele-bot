@@ -17,7 +17,7 @@ import logging
 import math
 import os
 import sys
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from html import escape as h
 from zoneinfo import ZoneInfo
 
@@ -64,7 +64,7 @@ def calculate_streaks(
     from datetime import timedelta
     while d <= today:
         dow = d.weekday()  # Mon=0 ... Sun=6
-        if dow == REST_DAY_INDEX or dow not in scheduled_weekdays:
+        if dow not in scheduled_weekdays:
             d += timedelta(days=1)
             continue
         key = d.isoformat()
@@ -121,13 +121,9 @@ def build_history(
         key = d.isoformat()
         weekday_name = WEEKDAY_NAMES[dow]
 
-        if dow == REST_DAY_INDEX:
+        if dow not in scheduled_weekdays:
             if key <= today.isoformat():
                 history.append({"date": key, "weekday": weekday_name, "status": "rest", "tasks": ["Rest Day"]})
-            d += timedelta(days=1)
-            continue
-
-        if dow not in scheduled_weekdays:
             d += timedelta(days=1)
             continue
 
@@ -332,18 +328,22 @@ async def run() -> None:
     day_name = today.strftime("%A")
     today_str = today.isoformat()
 
+    db = get_firestore_client()
+
     # Check if today is a rest day (cycle or legacy)
     cycle_snapshot = db.collection("settings").document("routine_cycle").get()
     is_rest_day = False
+    cycle_active = False
     if cycle_snapshot.exists:
         cycle_data = cycle_snapshot.to_dict() or {}
         if cycle_data.get("enabled"):
+            cycle_active = True
             cycle_config = CycleConfig.from_dict(cycle_data)
             _, day_type = cycle_config.get_day_info(today)
             if day_type == "rest":
                 is_rest_day = True
 
-    if not is_rest_day and today.weekday() == REST_DAY_INDEX:
+    if not cycle_active and not is_rest_day and today.weekday() == REST_DAY_INDEX:
         is_rest_day = True
 
     if is_rest_day:
@@ -351,8 +351,6 @@ async def run() -> None:
         return
 
     LOG.info("Checking missed responses for %s (%s)", today_str, day_name)
-
-    db = get_firestore_client()
 
     # Find today's poll dispatch
     dispatches = list(
@@ -423,10 +421,10 @@ async def run() -> None:
         uid = user_doc.id
         udata = user_doc.to_dict()
 
-        # Check if they already checked in today
+        # Check if they already checked in today (status field present = answered)
         checkin_ref = db.collection("users").document(uid).collection("checkins").document(today_str)
         checkin_snap = checkin_ref.get()
-        if checkin_snap.exists:
+        if checkin_snap.exists and (checkin_snap.to_dict() or {}).get("status"):
             continue  # already responded
 
         first_name = udata.get("first_name", "Someone")
@@ -446,7 +444,7 @@ async def run() -> None:
             joined_on = date.fromisoformat(joined_on_str) if isinstance(joined_on_str, str) else today
 
             # Record missed checkin
-            now = datetime.utcnow().isoformat() + "Z"
+            now = datetime.now(timezone.utc).isoformat()
             db.collection("users").document(uid).collection("checkins").document(today_str).set({
                 "date": today_str,
                 "weekday": day_name,
