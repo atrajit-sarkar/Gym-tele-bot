@@ -183,9 +183,13 @@ async function computeProgress(dbPath, accessToken, userId, todayStr, todayWeekd
     todayTasks = tasksByWeekday[todayWeekday] || [];
   }
 
-  // Fetch user's joined_on date
+  // Fetch user's joined_on date; fall back to earliest checkin if missing
   const userDoc = await firestoreGet(dbPath, accessToken, `users/${userId}`);
-  const joinedOnStr = userDoc?.fields?.joined_on?.stringValue || todayStr;
+  let joinedOnStr = userDoc?.fields?.joined_on?.stringValue;
+  if (!joinedOnStr) {
+    const allDates = Object.keys(checkinMap).sort();
+    joinedOnStr = allDates.length > 0 ? allDates[0] : todayStr;
+  }
 
   const streaks = calculateStreaks(joinedOnStr, scheduledWeekdays, checkinMap, todayStr);
 

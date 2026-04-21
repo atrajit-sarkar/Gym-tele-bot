@@ -496,6 +496,7 @@ class FirestoreRepository:
 
         self.users_ref.document(str(user_id)).set(
             {
+                "joined_on": joined_on.isoformat(),
                 "current_streak": summary.current_streak,
                 "longest_streak": summary.longest_streak,
                 "total_completed_days": summary.total_completed_days,
