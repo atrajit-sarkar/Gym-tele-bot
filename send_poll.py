@@ -19,9 +19,12 @@ from zoneinfo import ZoneInfo
 
 import firebase_admin
 import httpx
+from dotenv import load_dotenv
 from firebase_admin import credentials, firestore
 
 from app.repository import CycleConfig
+
+load_dotenv()
 
 logging.basicConfig(
     level=logging.INFO,
