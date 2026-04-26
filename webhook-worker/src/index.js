@@ -34,11 +34,30 @@ export default {
     }
 
     // New chat members — welcome and prompt to /start the bot
+    // Handles both: message.new_chat_members (added by someone) and
+    // chat_member update (joined via link) — the latter needs bot to be admin
     if (body.message?.new_chat_members) {
       try {
         await handleNewChatMembers(body.message, env);
       } catch (err) {
         console.error("Error handling new chat members:", err);
+      }
+      return new Response("OK", { status: 200 });
+    }
+
+    if (body.chat_member) {
+      const cm = body.chat_member;
+      const wasNotMember = ["left", "kicked", "banned", "restricted"].includes(cm.old_chat_member?.status);
+      const isNowMember = ["member", "administrator", "creator"].includes(cm.new_chat_member?.status);
+      if (wasNotMember && isNowMember) {
+        try {
+          await handleNewChatMembers(
+            { chat: cm.chat, new_chat_members: [cm.new_chat_member.user] },
+            env
+          );
+        } catch (err) {
+          console.error("Error handling chat_member join:", err);
+        }
       }
       return new Response("OK", { status: 200 });
     }
