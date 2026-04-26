@@ -40,9 +40,9 @@ def compute_streak_summary(
         status = checkins.get(key)
 
         if current_day.weekday() not in scheduled_weekdays:
-            # Include rest-day check-ins so they count toward the streak
-            if status == "rest":
-                resolved_statuses.append((key, "rest"))
+            # Non-scheduled day (e.g. Sunday) — always counts as rest for streak
+            # continuity, whether or not a check-in was recorded (legacy users).
+            resolved_statuses.append((key, "rest"))
             current_day += timedelta(days=1)
             continue
 
