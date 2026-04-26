@@ -65,10 +65,10 @@ async function handlePollAnswer(pollAnswer, env) {
     return;
   }
 
-  const scheduledDate = pollDoc.fields.scheduled_date.stringValue;
-  const weekday = pollDoc.fields.weekday.stringValue;
-  const chatId = pollDoc.fields.chat_id.stringValue;
-  const topicId = pollDoc.fields.topic_id.integerValue;
+  const scheduledDate = pollDoc.fields.scheduled_date?.stringValue;
+  const weekday = pollDoc.fields.weekday?.stringValue;
+  const chatId = Number(pollDoc.fields.chat_id?.integerValue ?? pollDoc.fields.chat_id?.stringValue);
+  const topicId = Number(pollDoc.fields.topic_id?.integerValue ?? 0) || null;
 
   // Record check-in
   const now = new Date().toISOString();
