@@ -36,12 +36,15 @@ def compute_streak_summary(
     current_day = joined_on
 
     while current_day <= today:
-        if current_day.weekday() not in scheduled_weekdays:
-            current_day += timedelta(days=1)
-            continue
-
         key = current_day.isoformat()
         status = checkins.get(key)
+
+        if current_day.weekday() not in scheduled_weekdays:
+            # Include rest-day check-ins so they count toward the streak
+            if status == "rest":
+                resolved_statuses.append((key, "rest"))
+            current_day += timedelta(days=1)
+            continue
 
         if current_day == today and status is None:
             current_day += timedelta(days=1)
@@ -56,11 +59,11 @@ def compute_streak_summary(
         current_day += timedelta(days=1)
 
     total_completed = sum(1 for _, status in resolved_statuses if status == "completed")
-    total_missed = sum(1 for _, status in resolved_statuses if status != "completed")
+    total_missed = sum(1 for _, status in resolved_statuses if status not in ("completed", "rest"))
 
     current_streak = 0
     for _, status in reversed(resolved_statuses):
-        if status == "completed":
+        if status in ("completed", "rest"):
             current_streak += 1
             continue
         break
@@ -68,15 +71,16 @@ def compute_streak_summary(
     longest_streak = 0
     running = 0
     for _, status in resolved_statuses:
-        if status == "completed":
+        if status in ("completed", "rest"):
             running += 1
             longest_streak = max(longest_streak, running)
             continue
         running = 0
 
+    gym_resolved = [s for _, s in resolved_statuses if s != "rest"]
     completion_rate = 0.0
-    if resolved_statuses:
-        completion_rate = round((total_completed / len(resolved_statuses)) * 100, 2)
+    if gym_resolved:
+        completion_rate = round((total_completed / len(gym_resolved)) * 100, 2)
 
     completed_dates = [key for key, status in resolved_statuses if status == "completed"]
 

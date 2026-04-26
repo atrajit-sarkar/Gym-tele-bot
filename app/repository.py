@@ -393,6 +393,21 @@ class FirestoreRepository:
         snapshot = ref.get()
         return snapshot.to_dict() if snapshot.exists else None
 
+    def record_rest_day(self, user_id: int, today: date) -> StreakSummary:
+        date_key = today.isoformat()
+        now = _utcnow()
+        self.users_ref.document(str(user_id)).collection("checkins").document(date_key).set(
+            {
+                "date": date_key,
+                "weekday": today.strftime("%A"),
+                "status": "rest",
+                "answered_at": now,
+                "updated_at": now,
+            },
+            merge=True,
+        )
+        return self.recalculate_user_stats(user_id=user_id, today=today)
+
     def upsert_poll_dispatch(
         self,
         user_id: int,

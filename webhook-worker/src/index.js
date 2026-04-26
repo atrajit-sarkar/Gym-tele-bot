@@ -20,15 +20,26 @@ export default {
       return new Response("Unauthorized", { status: 401 });
     }
 
-    const update = await request.json();
+    const url = new URL(request.url);
+    const body = await request.json();
+
+    // Broadcast rest day to all users
+    if (url.pathname === "/broadcast-rest-day") {
+      try {
+        await handleBroadcastRestDay(body.date, body.weekday, env);
+      } catch (err) {
+        console.error("Error broadcasting rest day:", err);
+      }
+      return new Response("OK", { status: 200 });
+    }
 
     // Only process poll_answer updates
-    if (!update.poll_answer) {
+    if (!body.poll_answer) {
       return new Response("OK", { status: 200 });
     }
 
     try {
-      await handlePollAnswer(update.poll_answer, env);
+      await handlePollAnswer(body.poll_answer, env);
     } catch (err) {
       console.error("Error handling poll answer:", err);
     }
@@ -84,6 +95,13 @@ async function handlePollAnswer(pollAnswer, env) {
       updated_at: { timestampValue: now },
     },
   });
+
+  // Save first_name to user doc so broadcasts can use it
+  try {
+    await firestorePatch(dbPath, accessToken, `users/${userId}`, {
+      fields: { first_name: { stringValue: firstName } },
+    });
+  } catch (_) { /* non-critical */ }
 
   console.log(`Recorded ${status} for user ${userId} on ${scheduledDate}`);
 
@@ -340,8 +358,13 @@ function calculateStreaks(joinedOnStr, scheduledWeekdays, checkins, todayStr) {
   const current = new Date(joinedOn);
   while (current <= today) {
     const dayOfWeek = (current.getUTCDay() + 6) % 7; // Mon=0 ... Sun=6
-    // Skip rest day (Sunday) — never counts for or against streaks
+    const key = current.toISOString().slice(0, 10);
+
+    // Rest day (Sunday) — always counts as "rest" (positive for streak)
     if (dayOfWeek === REST_DAY_INDEX) {
+      if (key <= todayStr) {
+        resolved.push({ date: key, status: checkins[key] || "rest" });
+      }
       current.setUTCDate(current.getUTCDate() + 1);
       continue;
     }
@@ -350,7 +373,6 @@ function calculateStreaks(joinedOnStr, scheduledWeekdays, checkins, todayStr) {
       continue;
     }
 
-    const key = current.toISOString().slice(0, 10);
     let status = checkins[key] || null;
 
     if (key === todayStr && !status) {
@@ -367,19 +389,22 @@ function calculateStreaks(joinedOnStr, scheduledWeekdays, checkins, todayStr) {
     current.setUTCDate(current.getUTCDate() + 1);
   }
 
-  const totalCompleted = resolved.filter((r) => r.status === "completed").length;
-  const totalMissed = resolved.length - totalCompleted;
+  // Gym days only (no rest) for completed/missed counts and rate
+  const gymResolved = resolved.filter((r) => r.status !== "rest");
+  const totalCompleted = gymResolved.filter((r) => r.status === "completed").length;
+  const totalMissed = gymResolved.filter((r) => r.status !== "completed").length;
 
+  // Streak includes rest days (they don't break it)
   let currentStreak = 0;
   for (let i = resolved.length - 1; i >= 0; i--) {
-    if (resolved[i].status === "completed") currentStreak++;
+    if (resolved[i].status === "completed" || resolved[i].status === "rest") currentStreak++;
     else break;
   }
 
   let longestStreak = 0;
   let running = 0;
   for (const r of resolved) {
-    if (r.status === "completed") {
+    if (r.status === "completed" || r.status === "rest") {
       running++;
       if (running > longestStreak) longestStreak = running;
     } else {
@@ -387,7 +412,7 @@ function calculateStreaks(joinedOnStr, scheduledWeekdays, checkins, todayStr) {
     }
   }
 
-  const completionRate = resolved.length > 0 ? Math.round((totalCompleted / resolved.length) * 100 * 100) / 100 : 0;
+  const completionRate = gymResolved.length > 0 ? Math.round((totalCompleted / gymResolved.length) * 100 * 100) / 100 : 0;
 
   return { currentStreak, longestStreak, totalCompleted, totalMissed, completionRate };
 }
@@ -410,6 +435,8 @@ function buildProgressHTML(firstName, stats) {
 
   const todayStatusBadge = stats.todayStatus === "completed"
     ? `<span class="badge badge-done">Going for it</span>`
+    : stats.todayStatus === "rest"
+    ? `<span class="badge badge-rest">Taking Rest</span>`
     : `<span class="badge badge-skip">Skipping</span>`;
 
   const historyHtml = stats.history.map((entry, idx) => {
@@ -627,6 +654,7 @@ function buildProgressHTML(firstName, stats) {
   }
   .badge-done { background: var(--green-dim); color: var(--green); }
   .badge-skip { background: var(--yellow-dim); color: var(--yellow); }
+  .badge-rest { background: rgba(136, 136, 160, 0.15); color: #8888a0; }
 
   /* History Table */
   .history-table {
@@ -1026,6 +1054,50 @@ async function sendTelegramDM(botToken, userId, text) {
   );
   if (!resp.ok) {
     console.error(`Telegram DM to ${userId} failed:`, await resp.text());
+  }
+}
+
+// ── Rest day broadcast ───────────────────────────────────────────────
+
+async function handleBroadcastRestDay(dateStr, weekday, env) {
+  const sa = parseServiceAccount(env.FIREBASE_SERVICE_ACCOUNT_BASE64);
+  const accessToken = await getAccessToken(sa);
+  const dbPath = firestoreBasePath(sa.project_id, env.FIRESTORE_DATABASE_ID);
+
+  const now = new Date().toISOString();
+  const userDocs = await firestoreList(dbPath, accessToken, "users");
+
+  for (const userDoc of userDocs) {
+    const userId = Number(userDoc.name.split("/").pop());
+    if (!userId || isNaN(userId)) continue;
+
+    const firstName = userDoc.fields?.first_name?.stringValue || "Athlete";
+
+    // Record rest check-in
+    try {
+      await firestorePatch(dbPath, accessToken, `users/${userId}/checkins/${dateStr}`, {
+        fields: {
+          date: { stringValue: dateStr },
+          weekday: { stringValue: weekday },
+          status: { stringValue: "rest" },
+          answered_at: { timestampValue: now },
+          updated_at: { timestampValue: now },
+        },
+      });
+    } catch (err) {
+      console.error(`Failed to record rest checkin for user ${userId}:`, err);
+    }
+
+    // Send HTML progress report to their weekday DM topic
+    try {
+      const dmTopicId = await getOrCreateUserTopic(dbPath, accessToken, env.TELEGRAM_BOT_TOKEN, userId, weekday);
+      const progress = await computeProgress(dbPath, accessToken, userId, dateStr, weekday, "rest");
+      const html = buildProgressHTML(firstName, progress);
+      await sendTelegramDocument(env.TELEGRAM_BOT_TOKEN, userId, html, `progress-${dateStr}.html`, dmTopicId);
+      console.log(`Sent rest day progress report to user ${userId}`);
+    } catch (err) {
+      console.error(`Failed to send rest day report to user ${userId}:`, err);
+    }
   }
 }
 

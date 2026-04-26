@@ -448,6 +448,11 @@ class GymMotivationBot:
             return
 
         if not tasks:
+            # Rest day — record check-in so streak stays intact
+            try:
+                self.repository.record_rest_day(user_id, today)
+            except Exception:
+                LOGGER.exception("Failed to record rest day for user %s", user_id)
             return
 
         existing = self.repository.get_checkin(user_id, today)

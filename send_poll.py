@@ -337,6 +337,23 @@ def main() -> None:
             scheduled_date=today,
             tasks=tasks,
         )
+    elif not tasks:
+        # Rest day — broadcast rest check-ins and progress reports to all users
+        worker_url = os.getenv("CLOUDFLARE_WORKER_URL", "https://gym-buddy-webhook.atrajit-sarkar.workers.dev")
+        webhook_secret = os.environ.get("WEBHOOK_SECRET", "")
+        try:
+            with httpx.Client(timeout=90) as client:
+                r = client.post(
+                    f"{worker_url}/broadcast-rest-day",
+                    headers={
+                        "X-Telegram-Bot-Api-Secret-Token": webhook_secret,
+                        "Content-Type": "application/json",
+                    },
+                    json={"date": today.isoformat(), "weekday": day_name},
+                )
+                LOGGER.info("Rest day broadcast: HTTP %s — %s", r.status_code, r.text)
+        except Exception:
+            LOGGER.exception("Failed to broadcast rest day to users")
 
     LOGGER.info("Done.")
 
