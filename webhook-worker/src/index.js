@@ -23,13 +23,6 @@ export default {
     const url = new URL(request.url);
     const body = await request.json();
 
-    // Debug: log top-level keys of every incoming update
-    console.log("UPDATE keys:", Object.keys(body).join(", "), "| update_id:", body.update_id);
-    if (body.chat_member) {
-      const cm = body.chat_member;
-      console.log("chat_member: chat.id=", cm.chat?.id, "old=", cm.old_chat_member?.status, "new=", cm.new_chat_member?.status);
-    }
-
     // Broadcast rest day to all users
     if (url.pathname === "/broadcast-rest-day") {
       try {
@@ -106,14 +99,25 @@ async function handleNewChatMembers(message, env) {
       `To get your personalised daily workout reports and streak tracking, ` +
       `start the bot in a private chat 👉 @${botUsername} → send <b>/start</b>`;
 
-    const body = { chat_id: groupChatId, text, parse_mode: "HTML" };
-    if (welcomeTopicId) body.message_thread_id = welcomeTopicId;
-    const resp = await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/sendMessage`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
-    if (!resp.ok) console.error("Welcome message failed:", await resp.text());
+    const sendWelcome = async (threadId) => {
+      const payload = { chat_id: groupChatId, text, parse_mode: "HTML" };
+      if (threadId) payload.message_thread_id = threadId;
+      return fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/sendMessage`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+    };
+
+    let resp = await sendWelcome(welcomeTopicId);
+    if (!resp.ok) {
+      const err = await resp.json();
+      // If the configured topic doesn't exist, retry without a thread (General)
+      if (welcomeTopicId && err.description?.includes("thread not found")) {
+        resp = await sendWelcome(null);
+      }
+      if (!resp.ok) console.error("Welcome message failed:", JSON.stringify(err));
+    }
   }
 }
 
