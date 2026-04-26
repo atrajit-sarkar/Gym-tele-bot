@@ -92,12 +92,13 @@ async function handlePollAnswer(pollAnswer, env) {
   const message = `<b>${escapeHtml(firstName)}</b>: ${statusText}`;
   await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, chatId, topicId, message);
 
-  // Compute progress and DM the user
+  // Compute progress and DM the user into their weekday topic
   try {
+    const dmTopicId = await getOrCreateUserTopic(dbPath, accessToken, env.TELEGRAM_BOT_TOKEN, userId, weekday);
     const progress = await computeProgress(dbPath, accessToken, userId, scheduledDate, weekday, status);
     const html = buildProgressHTML(firstName, progress);
-    await sendTelegramDocument(env.TELEGRAM_BOT_TOKEN, userId, html, `progress-${scheduledDate}.html`);
-    console.log(`Sent progress report to user ${userId}`);
+    await sendTelegramDocument(env.TELEGRAM_BOT_TOKEN, userId, html, `progress-${scheduledDate}.html`, dmTopicId);
+    console.log(`Sent progress report to user ${userId} in topic ${dmTopicId}`);
   } catch (err) {
     console.error(`Failed to send progress report to ${userId}:`, err);
   }
@@ -1028,7 +1029,58 @@ async function sendTelegramDM(botToken, userId, text) {
   }
 }
 
-async function sendTelegramDocument(botToken, userId, htmlContent, filename) {
+async function getOrCreateUserTopic(dbPath, accessToken, botToken, userId, weekday) {
+  // Read stored topic id from Firestore
+  const userDoc = await firestoreGet(dbPath, accessToken, `users/${userId}`);
+  const storedTopicId = userDoc?.fields?.weekday_topics?.mapValue?.fields?.[weekday]?.integerValue;
+  if (storedTopicId) return Number(storedTopicId);
+
+  // Create a new forum topic in the user's private chat
+  const resp = await fetch(
+    `https://api.telegram.org/bot${botToken}/createForumTopic`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ chat_id: userId, name: weekday }),
+    }
+  );
+  if (!resp.ok) {
+    console.error(`createForumTopic for user ${userId} weekday ${weekday} failed:`, await resp.text());
+    return null;
+  }
+  const data = await resp.json();
+  const topicId = data.result?.message_thread_id;
+  if (!topicId) return null;
+
+  // Persist it in Firestore under weekday_topics.<weekday> using dot-notation field mask
+  const patchResp = await fetch(
+    `${dbPath}/users/${userId}?updateMask.fieldPaths=${encodeURIComponent(`weekday_topics.${weekday}`)}`,
+    {
+      method: "PATCH",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        fields: {
+          weekday_topics: {
+            mapValue: {
+              fields: {
+                [weekday]: { integerValue: String(topicId) },
+              },
+            },
+          },
+        },
+      }),
+    }
+  );
+  if (!patchResp.ok) {
+    console.error(`Failed to persist topic_id for user ${userId}:`, await patchResp.text());
+  }
+  return topicId;
+}
+
+async function sendTelegramDocument(botToken, userId, htmlContent, filename, threadId = null) {
   const boundary = "----FormBoundary" + Date.now().toString(36);
   const encoder = new TextEncoder();
   const fileBytes = encoder.encode(htmlContent);
@@ -1036,8 +1088,11 @@ async function sendTelegramDocument(botToken, userId, htmlContent, filename) {
   const parts = [
     `--${boundary}\r\nContent-Disposition: form-data; name="chat_id"\r\n\r\n${userId}`,
     `--${boundary}\r\nContent-Disposition: form-data; name="caption"\r\n\r\nYour progress report is ready. Open the file to view.`,
-    `--${boundary}\r\nContent-Disposition: form-data; name="document"; filename="${filename}"\r\nContent-Type: text/html\r\n\r\n`,
   ];
+  if (threadId) {
+    parts.push(`--${boundary}\r\nContent-Disposition: form-data; name="message_thread_id"\r\n\r\n${threadId}`);
+  }
+  parts.push(`--${boundary}\r\nContent-Disposition: form-data; name="document"; filename="${filename}"\r\nContent-Type: text/html\r\n\r\n`);
 
   const before = encoder.encode(parts.join("\r\n") + "\r\n");
   const after = encoder.encode(`\r\n--${boundary}--\r\n`);
