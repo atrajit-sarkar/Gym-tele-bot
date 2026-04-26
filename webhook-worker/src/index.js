@@ -33,6 +33,16 @@ export default {
       return new Response("OK", { status: 200 });
     }
 
+    // New chat members — welcome and prompt to /start the bot
+    if (body.message?.new_chat_members) {
+      try {
+        await handleNewChatMembers(body.message, env);
+      } catch (err) {
+        console.error("Error handling new chat members:", err);
+      }
+      return new Response("OK", { status: 200 });
+    }
+
     // Only process poll_answer updates
     if (!body.poll_answer) {
       return new Response("OK", { status: 200 });
@@ -48,6 +58,38 @@ export default {
     return new Response("OK", { status: 200 });
   },
 };
+
+// ── New member welcome handler ─────────────────────────────────────
+
+async function handleNewChatMembers(message, env) {
+  const groupChatId = Number(env.GROUP_CHAT_ID);
+  const welcomeTopicId = env.GROUP_WELCOME_TOPIC_ID ? Number(env.GROUP_WELCOME_TOPIC_ID) : null;
+
+  if (!groupChatId || message.chat?.id !== groupChatId) return;
+
+  // Fetch bot username
+  const meResp = await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/getMe`);
+  const meData = await meResp.json();
+  const botUsername = meData.result?.username ?? "";
+
+  for (const member of message.new_chat_members) {
+    if (member.is_bot) continue;
+    const mention = `<a href="tg://user?id=${member.id}">${escapeHtml(member.first_name)}</a>`;
+    const text =
+      `👋 Welcome, ${mention}!\n\n` +
+      `To get your personalised daily workout reports and streak tracking, ` +
+      `start the bot in a private chat 👉 @${botUsername} → send <b>/start</b>`;
+
+    const body = { chat_id: groupChatId, text, parse_mode: "HTML" };
+    if (welcomeTopicId) body.message_thread_id = welcomeTopicId;
+    const resp = await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/sendMessage`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (!resp.ok) console.error("Welcome message failed:", await resp.text());
+  }
+}
 
 // ── Poll answer handler ──────────────────────────────────────────────
 

@@ -34,7 +34,7 @@ def main() -> None:
 
     payload = {
         "url": worker_url,
-        "allowed_updates": ["poll_answer"],
+        "allowed_updates": ["poll_answer", "message"],
         "secret_token": webhook_secret,
     }
 
