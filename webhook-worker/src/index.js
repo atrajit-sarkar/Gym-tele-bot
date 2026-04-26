@@ -23,6 +23,13 @@ export default {
     const url = new URL(request.url);
     const body = await request.json();
 
+    // Debug: log top-level keys of every incoming update
+    console.log("UPDATE keys:", Object.keys(body).join(", "), "| update_id:", body.update_id);
+    if (body.chat_member) {
+      const cm = body.chat_member;
+      console.log("chat_member: chat.id=", cm.chat?.id, "old=", cm.old_chat_member?.status, "new=", cm.new_chat_member?.status);
+    }
+
     // Broadcast rest day to all users
     if (url.pathname === "/broadcast-rest-day") {
       try {
