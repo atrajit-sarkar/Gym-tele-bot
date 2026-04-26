@@ -408,8 +408,22 @@ class GymMotivationBot:
                 force_poll=False,
             )
 
+    async def _get_or_create_topic(self, chat_id: int, user_id: int, weekday: str, bot) -> int | None:
+        topic_id = self.repository.get_user_topic_id(user_id, weekday)
+        if topic_id is not None:
+            return topic_id
+        try:
+            forum_topic = await bot.create_forum_topic(chat_id=chat_id, name=weekday)
+            topic_id = forum_topic.message_thread_id
+            self.repository.set_user_topic_id(user_id, weekday, topic_id)
+            return topic_id
+        except TelegramError:
+            LOGGER.exception("Failed to create forum topic for user %s weekday %s", user_id, weekday)
+            return None
+
     async def _send_today_flow(self, chat_id: int, user_id: int, bot, force_poll: bool) -> None:
         today = self._local_today()
+        weekday = today.strftime("%A")
         tasks, day_label, sets_reps_info = self.repository.get_todays_routine(today)
         motivation = await self.motivation_service.get_daily_motivation_message(
             today=today,
@@ -417,11 +431,14 @@ class GymMotivationBot:
             tasks=tasks,
         )
 
+        thread_id = await self._get_or_create_topic(chat_id, user_id, weekday, bot)
+
         try:
             await bot.send_message(
                 chat_id=chat_id,
                 text=build_today_message(day_label, tasks, motivation, sets_reps_info),
                 parse_mode=ParseMode.HTML,
+                message_thread_id=thread_id,
             )
         except Forbidden:
             self.repository.mark_user_inactive(user_id)
@@ -444,6 +461,7 @@ class GymMotivationBot:
                 options=["Completed", "Skipped"],
                 is_anonymous=False,
                 allows_multiple_answers=False,
+                message_thread_id=thread_id,
             )
             self.repository.upsert_poll_dispatch(
                 user_id=user_id,
@@ -452,6 +470,7 @@ class GymMotivationBot:
                 task_items=tasks,
                 poll_id=poll_message.poll.id,
                 message_id=poll_message.message_id,
+                topic_id=thread_id,
             )
         except Forbidden:
             self.repository.mark_user_inactive(user_id)

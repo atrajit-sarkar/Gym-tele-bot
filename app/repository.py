@@ -196,6 +196,16 @@ class FirestoreRepository:
         docs = self.users_ref.where("active", "==", True).stream()
         return [doc.to_dict() for doc in docs]
 
+    def get_user_topic_id(self, user_id: int, weekday: str) -> int | None:
+        snapshot = self.users_ref.document(str(user_id)).get()
+        if not snapshot.exists:
+            return None
+        data = snapshot.to_dict() or {}
+        return data.get("weekday_topics", {}).get(weekday)
+
+    def set_user_topic_id(self, user_id: int, weekday: str, topic_id: int) -> None:
+        self.users_ref.document(str(user_id)).update({f"weekday_topics.{weekday}": topic_id})
+
     def _build_task_payload(self, weekday: str, title: str, details: str, created_by: int) -> dict[str, Any]:
         normalized_weekday = normalize_weekday(weekday)
         task_id = secrets.token_hex(4)
@@ -391,6 +401,7 @@ class FirestoreRepository:
         task_items: list[dict[str, Any]],
         poll_id: str,
         message_id: int,
+        topic_id: int | None = None,
     ) -> None:
         date_key = scheduled_date.isoformat()
         task_ids = [task["task_id"] for task in task_items]
@@ -403,6 +414,7 @@ class FirestoreRepository:
             "poll_id": poll_id,
             "message_id": message_id,
             "chat_id": chat_id,
+            "topic_id": topic_id,
             "poll_sent_at": _utcnow(),
             "updated_at": _utcnow(),
         }
@@ -418,6 +430,7 @@ class FirestoreRepository:
                 "task_ids": task_ids,
                 "task_titles": task_titles,
                 "message_id": message_id,
+                "topic_id": topic_id,
                 "created_at": _utcnow(),
                 "updated_at": _utcnow(),
             }
