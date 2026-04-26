@@ -45,23 +45,6 @@ export default {
       return new Response("OK", { status: 200 });
     }
 
-    if (body.chat_member) {
-      const cm = body.chat_member;
-      const wasNotMember = ["left", "kicked", "banned", "restricted"].includes(cm.old_chat_member?.status);
-      const isNowMember = ["member", "administrator", "creator"].includes(cm.new_chat_member?.status);
-      if (wasNotMember && isNowMember) {
-        try {
-          await handleNewChatMembers(
-            { chat: cm.chat, new_chat_members: [cm.new_chat_member.user] },
-            env
-          );
-        } catch (err) {
-          console.error("Error handling chat_member join:", err);
-        }
-      }
-      return new Response("OK", { status: 200 });
-    }
-
     // Only process poll_answer updates
     if (!body.poll_answer) {
       return new Response("OK", { status: 200 });
